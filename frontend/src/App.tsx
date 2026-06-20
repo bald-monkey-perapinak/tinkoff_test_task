@@ -60,6 +60,8 @@ function showError(msg: string) {
 }
 
 const STORAGE_KEY = 'vacancy_agent_filters';
+const VACANCIES_KEY = 'vacancy_agent_vacancies';
+const SESSION_KEY = 'vacancy_agent_session';
 
 function loadFilters() {
   try {
@@ -75,6 +77,33 @@ function saveFilters(filters: Record<string, unknown>) {
   } catch {}
 }
 
+function loadVacancies(): Vacancy[] {
+  try {
+    const raw = localStorage.getItem(VACANCIES_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return [];
+}
+
+function saveVacancies(v: Vacancy[]) {
+  try {
+    localStorage.setItem(VACANCIES_KEY, JSON.stringify(v));
+  } catch {}
+}
+
+function loadSessionId(): string | null {
+  try {
+    return localStorage.getItem(SESSION_KEY);
+  } catch {}
+  return null;
+}
+
+function saveSessionId(id: string) {
+  try {
+    localStorage.setItem(SESSION_KEY, id);
+  } catch {}
+}
+
 export default function App() {
   const saved = loadFilters();
   const [tab, setTab] = useState<Tab>('search');
@@ -87,7 +116,7 @@ export default function App() {
   const [remoteOnly, setRemoteOnly] = useState(saved?.remoteOnly ?? false);
   const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? '');
 
-  const [vacancies, setVacancies] = useState<Vacancy[]>([]);
+  const [vacancies, setVacancies] = useState<Vacancy[]>(loadVacancies);
   const [total, setTotal] = useState(0);
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [report, setReport] = useState('');
@@ -102,12 +131,21 @@ export default function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
 
-  const sessionIdRef = useRef<string | null>(null);
+  const sessionIdRef = useRef<string | null>(loadSessionId());
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     saveFilters({ query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom });
   }, [query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom]);
+
+  useEffect(() => {
+    saveVacancies(vacancies);
+  }, [vacancies]);
+
+  useEffect(() => {
+    const sid = sessionIdRef.current;
+    if (sid) saveSessionId(sid);
+  });
 
   useEffect(() => {
     WebApp.ready();
@@ -119,6 +157,11 @@ export default function App() {
     WebApp.onEvent('viewportChanged', applyTelegramViewport);
 
     loadFavorites();
+
+    const savedVacancies = loadVacancies();
+    if (savedVacancies.length > 0) {
+      setTotal(savedVacancies.length);
+    }
 
     return () => {
       WebApp.offEvent('themeChanged', applyTelegramTheme);

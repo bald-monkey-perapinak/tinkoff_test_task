@@ -1,6 +1,7 @@
 import httpx
 import asyncio
 import logging
+import random
 from config import TELEGRAM_BOT_TOKEN
 from models import Subscription, Vacancy
 
@@ -39,8 +40,8 @@ async def send_telegram_message(chat_id: int, text: str, reply_markup: dict = No
                     logger.error(f"Telegram API error: status={resp.status_code}")
                     return False
             except httpx.TimeoutException:
-                delay = BASE_DELAY * (2 ** attempt)
-                logger.warning(f"Telegram timeout, attempt {attempt + 1}, retrying in {delay}s")
+                delay = BASE_DELAY * (2 ** attempt) + random.uniform(0, BASE_DELAY * 0.3)
+                logger.warning(f"Telegram timeout, attempt {attempt + 1}, retrying in {delay:.1f}s")
                 await asyncio.sleep(delay)
             except Exception as e:
                 logger.error(f"Telegram send failed: {type(e).__name__}")

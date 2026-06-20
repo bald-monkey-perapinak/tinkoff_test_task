@@ -6,6 +6,7 @@ import random
 from typing import Optional
 from config import HH_API_BASE, HH_USER_AGENT, HH_PROXY, HH_PROXY_LIST, DATA_DIR
 from models import Vacancy, SearchParams
+from circuit_breaker import hh_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +187,11 @@ async def search_vacancies(params: SearchParams) -> tuple[list[Vacancy], int]:
     await _load_dictionaries()
     _load_proxy_list()
 
+    if not hh_breaker.call_allowed():
+        logger.warning("hh.ru circuit breaker open, returning mock data")
+        mock = _get_mock_vacancies(params.query)
+        return mock, len(mock)
+
     query_params = {
         "text": params.query,
         "page": params.page,
@@ -224,22 +230,24 @@ async def search_vacancies(params: SearchParams) -> tuple[list[Vacancy], int]:
                 items = data.get("items", [])
                 total = data.get("found", 0)
                 vacancies = [_hh_to_vacancy(item) for item in items[:50]]
+                hh_breaker.record_success()
                 return vacancies, total
         except httpx.HTTPStatusError as e:
             last_error = e
-            delay = BASE_DELAY * (2 ** attempt)
-            logger.warning(f"hh.ru API error {e.response.status_code}, attempt {attempt + 1}, retrying in {delay}s")
+            delay = BASE_DELAY * (2 ** attempt) + random.uniform(0, BASE_DELAY * 0.3)
+            logger.warning(f"hh.ru API error {e.response.status_code}, attempt {attempt + 1}, retrying in {delay:.1f}s")
             await asyncio.sleep(delay)
         except httpx.TimeoutException as e:
             last_error = e
-            delay = BASE_DELAY * (2 ** attempt)
-            logger.warning(f"hh.ru timeout, attempt {attempt + 1}, retrying in {delay}s")
+            delay = BASE_DELAY * (2 ** attempt) + random.uniform(0, BASE_DELAY * 0.3)
+            logger.warning(f"hh.ru timeout, attempt {attempt + 1}, retrying in {delay:.1f}s")
             await asyncio.sleep(delay)
         except Exception as e:
             logger.error(f"hh.ru request failed: {e}")
             break
 
     logger.warning(f"hh.ru search failed after {MAX_RETRIES} retries: {last_error}")
+    hh_breaker.record_failure()
     logger.info(f"Falling back to mock data for query='{params.query}'")
     mock = _get_mock_vacancies(params.query)
     return mock, len(mock)

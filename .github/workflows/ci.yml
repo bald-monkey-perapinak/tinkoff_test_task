@@ -131,6 +131,33 @@ jobs:
         run: npm run build
         working-directory: frontend
 
+  security-scan:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: lint-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Audit Python dependencies
+        run: |
+          pip install pip-audit
+          pip-audit -r backend/requirements.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+        working-directory: frontend
+
   build-docker:
     name: Build Docker Images
     runs-on: ubuntu-latest

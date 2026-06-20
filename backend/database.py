@@ -2,10 +2,14 @@ import aiosqlite
 import json
 import logging
 import time
+import asyncio
+import shutil
 from config import DB_PATH, SESSION_TTL_SECONDS
 from models import Favorite, Subscription, Vacancy
 
 logger = logging.getLogger(__name__)
+
+MAX_SESSION_PAYLOAD_BYTES = 2 * 1024 * 1024  # 2MB
 
 
 async def init_db():
@@ -161,6 +165,9 @@ async def mark_vacancy_seen(chat_id: int, vacancy_id: str):
 async def save_session(session_id: str, vacancies: list, created_at: float):
     try:
         vacancies_json = json.dumps([v.model_dump() for v in vacancies])
+        if len(vacancies_json.encode("utf-8")) > MAX_SESSION_PAYLOAD_BYTES:
+            logger.error(f"Session payload too large: {len(vacancies_json)} bytes, rejecting")
+            raise ValueError("Session payload exceeds size limit")
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 "INSERT OR REPLACE INTO sessions (session_id, vacancies_json, created_at) VALUES (?, ?, ?)",
@@ -258,3 +265,18 @@ async def set_analysis_cache(cache_key: str, results_json: str, report: str):
             await db.commit()
     except Exception as e:
         logger.error(f"Failed to set analysis cache: {e}")
+
+
+async def backup_database():
+    try:
+        backup_dir = DB_PATH.parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        backup_path = backup_dir / f"vacancy_bot_{int(time.time())}.db"
+        async with aiosqlite.connect(DB_PATH) as source:
+            async with aiosqlite.connect(backup_path) as dest:
+                await source.backup(dest)
+        logger.info(f"Database backed up to {backup_path}")
+        for old in sorted(backup_dir.glob("vacancy_bot_*.db"))[:-5]:
+            old.unlink()
+    except Exception as e:
+        logger.error(f"Database backup failed: {e}")

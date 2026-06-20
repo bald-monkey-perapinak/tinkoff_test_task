@@ -6,7 +6,7 @@ import logging
 import uuid
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from slowapi import Limiter
@@ -24,13 +24,16 @@ from database import (
     add_subscription, remove_subscription, get_active_subscriptions,
     is_vacancy_seen, mark_vacancy_seen,
     save_session, get_session, cleanup_expired_sessions, get_all_session_vacancies,
+    backup_database,
 )
 from models import SearchParams, Vacancy, CriteriaInput, Favorite, Subscription, Schedule
 from services.hh_client import search_vacancies, get_area_suggestions, get_role_suggestions
-from services.parser import parse_uploaded_file
+from services.parser import parse_uploaded_file, _csv_safe
 from services.analyzer import analyze_with_llm
 from services.report import generate_report
 from services.notifier import notify_new_vacancies
+from auth import require_telegram_auth
+from circuit_breaker import hh_breaker, groq_breaker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -102,6 +105,7 @@ async def lifespan(app: FastAPI):
     global _background_task
     await init_db()
     logger.info("Database initialized")
+    await backup_database()
     _background_task = asyncio.create_task(_notification_loop())
     logger.info(f"Background notification task started (interval: {NOTIFICATION_INTERVAL}s)")
     yield
@@ -127,6 +131,26 @@ async def add_request_id(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def validate_telegram_auth(request: Request, call_next):
+    from auth import validate_telegram_init_data
+    from config import TELEGRAM_BOT_TOKEN
+
+    if TELEGRAM_BOT_TOKEN and request.url.path.startswith("/api/"):
+        init_data = request.headers.get("Telegram-Init-Data", "")
+        result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
+        if result is None:
+            return JSONResponse(status_code=403, detail="Invalid or missing Telegram initData")
+        request.state.telegram_user = result
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
@@ -140,7 +164,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Telegram-Init-Data"],
 )
 
 
@@ -170,7 +194,7 @@ async def api_search(
             page=page,
             per_page=per_page,
         )
-        vacancies, total = await search_vacancies(params)
+        vacancies, total = await asyncio.wait_for(search_vacancies(params), timeout=20.0)
         logger.info(f"[{request.state.request_id}] Search: query='{query}', found={total}")
         return {
             "vacancies": [v.model_dump() for v in vacancies],
@@ -193,7 +217,7 @@ async def api_upload(request: Request, file: UploadFile = File(...)):
         if len(content) > MAX_UPLOAD_SIZE:
             raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
 
-        text = content.decode("utf-8", errors="replace")
+        text = content.decode("utf-8", errors="replace").replace("\x00", "")
         vacancies = parse_uploaded_file(file.filename or "unknown", text)
         if not vacancies:
             raise HTTPException(status_code=400, detail="No valid vacancies found in file or invalid format")
@@ -240,12 +264,15 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
                 query=criteria.direction or "стажировка junior",
                 salary_from=criteria.min_salary,
             )
-            vacancies_to_analyze, _ = await search_vacancies(params)
+            vacancies_to_analyze, _ = await asyncio.wait_for(search_vacancies(params), timeout=20.0)
 
         if not vacancies_to_analyze:
             raise HTTPException(status_code=404, detail="No vacancies to analyze")
 
-        results = await analyze_with_llm(vacancies_to_analyze[:20], criteria)
+        results = await asyncio.wait_for(
+            analyze_with_llm(vacancies_to_analyze[:20], criteria),
+            timeout=30.0,
+        )
         criteria_text = "\n".join(filter(None, [
             f"- Направление: {criteria.direction}" if criteria.direction else None,
             f"- Город: {criteria.city}" if criteria.city else None,
@@ -405,25 +432,43 @@ async def api_roles(request: Request, q: str = Query(default="", max_length=100)
         raise HTTPException(status_code=500, detail="Role search failed")
 
 
-@app.get("/api/health")
-async def api_health():
+@app.get("/api/health/live")
+async def api_health_live():
+    return {"status": "ok"}
+
+
+@app.get("/api/health/ready")
+async def api_health_ready():
+    import shutil
     checks = {}
     status = "ok"
 
     try:
         import aiosqlite
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("SELECT 1")
+        async with aiosqlite.connect(DB_PATH, timeout=2) as db:
+            await asyncio.wait_for(db.execute("SELECT 1"), timeout=2)
         checks["database"] = "ok"
     except Exception as e:
         checks["database"] = f"error: {e}"
         status = "degraded"
 
-    checks["hh_api"] = "configured"
-    checks["hh_proxy"] = HH_PROXY if HH_PROXY else "not configured"
-    checks["groq"] = "configured" if GROQ_API_KEY else "not configured (rule-based fallback)"
+    checks["hh_circuit"] = hh_breaker.get_state()
+    checks["groq_circuit"] = groq_breaker.get_state()
+
+    try:
+        free_gb = shutil.disk_usage(DB_PATH.parent).free / 1e9
+        checks["disk_free_gb"] = round(free_gb, 2)
+        if free_gb < 0.5:
+            status = "degraded"
+    except Exception:
+        pass
 
     return {"status": status, "checks": checks}
+
+
+@app.get("/api/health")
+async def api_health():
+    return await api_health_ready()
 
 
 @app.get("/api/export")
@@ -445,15 +490,15 @@ async def api_export(request: Request, format: str = Query(default="json")):
                 v = next((x for x in all_vacancies if x.id == r.vacancy_id), None)
                 writer.writerow([
                     r.vacancy_id,
-                    v.title if v else "",
-                    v.company if v else "",
-                    v.city if v else "",
-                    v.salary if v else "",
-                    v.schedule if v else "",
-                    v.experience if v else "",
+                    _csv_safe(v.title) if v else "",
+                    _csv_safe(v.company) if v else "",
+                    _csv_safe(v.city) if v else "",
+                    _csv_safe(v.salary) if v else "",
+                    _csv_safe(v.schedule) if v else "",
+                    _csv_safe(v.experience) if v else "",
                     r.fit_score,
-                    r.why_fits,
-                    r.concerns,
+                    _csv_safe(r.why_fits),
+                    _csv_safe(r.concerns),
                     v.url if v else "",
                 ])
             return StreamingResponse(

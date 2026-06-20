@@ -1,3 +1,4 @@
+import WebApp from '@twa-dev/sdk';
 import { Vacancy, AnalysisResult, Criteria, Favorite, Subscription, SearchResult, Area } from './types';
 
 const BASE = import.meta.env.VITE_API_URL || '';
@@ -6,6 +7,23 @@ const MAX_RETRIES = 2;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getTelegramInitData(): string {
+  try {
+    return WebApp.initData || '';
+  } catch {
+    return '';
+  }
+}
+
+function getAuthHeaders(): Record<string, string> {
+  const initData = getTelegramInitData();
+  const headers: Record<string, string> = {};
+  if (initData) {
+    headers['Telegram-Init-Data'] = initData;
+  }
+  return headers;
 }
 
 async function request<T>(path: string, options: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT): Promise<T> {
@@ -17,7 +35,7 @@ async function request<T>(path: string, options: RequestInit = {}, timeoutMs = D
 
     try {
       const resp = await fetch(`${BASE}${path}`, {
-        headers: { 'Content-Type': 'application/json', ...options.headers },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), ...options.headers },
         ...options,
         signal: controller.signal,
       });
@@ -74,7 +92,12 @@ export async function uploadFile(file: File): Promise<{ loaded: number; session_
   try {
     const formData = new FormData();
     formData.append('file', file);
-    const resp = await fetch(`${BASE}/api/upload`, { method: 'POST', body: formData, signal: controller.signal });
+    const resp = await fetch(`${BASE}/api/upload`, {
+      method: 'POST',
+      body: formData,
+      headers: getAuthHeaders(),
+      signal: controller.signal,
+    });
     clearTimeout(timer);
     if (!resp.ok) {
       const error = await resp.json().catch(() => ({ detail: 'Upload failed' }));
@@ -130,7 +153,9 @@ export async function searchRoles(q: string): Promise<{ roles: Area[] }> {
 }
 
 export async function exportVacancies(format: 'json' | 'csv'): Promise<Blob> {
-  const resp = await fetch(`${BASE}/api/export?format=${format}`);
+  const resp = await fetch(`${BASE}/api/export?format=${format}`, {
+    headers: getAuthHeaders(),
+  });
   if (!resp.ok) {
     const error = await resp.json().catch(() => ({ detail: 'Export failed' }));
     throw new Error(error.detail || `HTTP ${resp.status}`);

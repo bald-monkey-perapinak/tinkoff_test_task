@@ -8,6 +8,7 @@ from models import Vacancy
 logger = logging.getLogger(__name__)
 
 MAX_FIELD_LEN = 1000
+MAX_CSV_COLUMNS = 50
 
 
 def _truncate(text: str) -> str:
@@ -17,7 +18,14 @@ def _truncate(text: str) -> str:
     return clean[:MAX_FIELD_LEN]
 
 
+def _csv_safe(value: str) -> str:
+    if value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + value
+    return value
+
+
 def parse_vacancies_json(content: str) -> list[Vacancy]:
+    content = content.replace("\x00", "")
     try:
         data = json.loads(content)
         if not isinstance(data, list):
@@ -27,6 +35,11 @@ def parse_vacancies_json(content: str) -> list[Vacancy]:
             try:
                 if not isinstance(item, dict):
                     continue
+                skills_raw = item.get("skills", [])
+                if isinstance(skills_raw, list):
+                    skills = [_truncate(s) for s in skills_raw[:20] if isinstance(s, str)]
+                else:
+                    skills = []
                 vacancies.append(Vacancy(
                     id=_truncate(str(item.get("id", item.get("url", "")))),
                     title=_truncate(item.get("title", item.get("name", ""))),
@@ -37,7 +50,7 @@ def parse_vacancies_json(content: str) -> list[Vacancy]:
                     salary_to=item.get("salary_to") if isinstance(item.get("salary_to"), (int, float)) else None,
                     schedule=_truncate(item.get("schedule", item.get("format", ""))),
                     experience=_truncate(item.get("experience", "")),
-                    skills=[_truncate(s) for s in item.get("skills", []) if isinstance(s, str)][:20],
+                    skills=skills,
                     url=_truncate(item.get("url", "")),
                     description=_truncate(item.get("description", "")),
                     published_at=_truncate(item.get("published_at", "")),
@@ -46,14 +59,18 @@ def parse_vacancies_json(content: str) -> list[Vacancy]:
             except Exception as e:
                 logger.warning(f"Skipping invalid vacancy entry: {e}")
         return _deduplicate(vacancies)
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON: {e}")
+    except (json.JSONDecodeError, RecursionError) as e:
+        logger.error(f"Invalid or malicious JSON structure: {e}")
         return []
 
 
 def parse_vacancies_csv(content: str) -> list[Vacancy]:
+    content = content.replace("\x00", "")
     try:
         reader = csv.DictReader(io.StringIO(content))
+        if reader.fieldnames and len(reader.fieldnames) > MAX_CSV_COLUMNS:
+            logger.warning(f"CSV has {len(reader.fieldnames)} columns (max {MAX_CSV_COLUMNS}), rejecting")
+            return []
         vacancies = []
         for row in reader:
             try:
@@ -76,8 +93,8 @@ def parse_vacancies_csv(content: str) -> list[Vacancy]:
 
                 vacancies.append(Vacancy(
                     id=_truncate(str(row.get("id", row.get("url", "")))),
-                    title=_truncate(row.get("title", row.get("name", ""))),
-                    company=_truncate(row.get("company", row.get("employer", ""))),
+                    title=_csv_safe(_truncate(row.get("title", row.get("name", "")))),
+                    company=_csv_safe(_truncate(row.get("company", row.get("employer", "")))),
                     city=_truncate(row.get("city", row.get("area", ""))),
                     salary=_truncate(row.get("salary", "")),
                     salary_from=salary_from,

@@ -158,7 +158,7 @@ async def validate_telegram_auth(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.hh.ru; frame-ancestors 'none'"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.hh.ru https://vacancy-agent.onrender.com; frame-ancestors 'none'"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
@@ -206,7 +206,7 @@ async def api_search(
             page=page,
             per_page=per_page,
         )
-        vacancies, total = await asyncio.wait_for(search_vacancies(params), timeout=20.0)
+        vacancies, total = await asyncio.wait_for(search_vacancies(params), timeout=60.0)
         logger.info(f"[{request.state.request_id}] Search: query='{query}', found={total}")
         return {
             "vacancies": [v.model_dump() for v in vacancies],

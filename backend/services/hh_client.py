@@ -183,6 +183,7 @@ def _hh_to_vacancy(v: dict) -> Vacancy:
 
 
 async def search_vacancies(params: SearchParams) -> tuple[list[Vacancy], int]:
+    global _shared_client
     await _load_dictionaries()
     _load_proxy_list()
 

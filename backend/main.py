@@ -308,7 +308,7 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
 
         results, metadata = await asyncio.wait_for(
             analyze_with_llm(vacancies_to_analyze[:ANALYSIS_MAX_VACANCIES], criteria),
-            timeout=60.0,
+            timeout=120.0,
         )
         criteria_text = build_criteria_text(criteria)
 

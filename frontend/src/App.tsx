@@ -376,14 +376,24 @@ export default function App() {
               {areaSuggestions.length > 0 && (
                 <div style={{
                   position: 'absolute', top: '100%', left: 0, right: 0,
-                  background: 'var(--card-bg)', border: '1px solid var(--border)',
-                  borderRadius: 8, zIndex: 10, maxHeight: 200, overflowY: 'auto',
+                  background: 'rgba(255,255,255,0.08)',
+                  backdropFilter: 'blur(20px)',
+                  WebkitBackdropFilter: 'blur(20px)',
+                  border: '1px solid rgba(255,255,255,0.1)',
+                  borderRadius: 12, zIndex: 10, maxHeight: 200, overflowY: 'auto',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.08)',
                 }}>
                   {areaSuggestions.map((a) => (
                     <div
                       key={a.id}
                       onClick={() => handleSelectArea(a)}
-                      style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13 }}
+                      style={{
+                        padding: '10px 14px', cursor: 'pointer', fontSize: 13,
+                        borderBottom: '1px solid rgba(255,255,255,0.06)',
+                        transition: 'background 0.2s',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(168,85,247,0.1)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
                       {a.name}
                     </div>

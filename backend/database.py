@@ -54,7 +54,6 @@ async def init_db():
                 CREATE TABLE IF NOT EXISTS analysis_cache (
                     cache_key TEXT PRIMARY KEY,
                     results_json TEXT NOT NULL,
-                    report TEXT NOT NULL,
                     created_at REAL NOT NULL
                 )
             """)
@@ -313,24 +312,24 @@ async def get_analysis_cache(cache_key: str) -> dict | None:
         cutoff = time.time() - ANALYSIS_CACHE_TTL
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
-                "SELECT results_json, report FROM analysis_cache WHERE cache_key = ? AND created_at >= ?",
+                "SELECT results_json FROM analysis_cache WHERE cache_key = ? AND created_at >= ?",
                 (cache_key, cutoff),
             )
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return {"results": json.loads(row[0]), "report": row[1]}
+            return {"results": json.loads(row[0])}
     except Exception as e:
         logger.error(f"Failed to get analysis cache: {e}")
         return None
 
 
-async def set_analysis_cache(cache_key: str, results_json: str, report: str):
+async def set_analysis_cache(cache_key: str, results_json: str):
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                "INSERT OR REPLACE INTO analysis_cache (cache_key, results_json, report, created_at) VALUES (?, ?, ?, ?)",
-                (cache_key, results_json, report, time.time()),
+                "INSERT OR REPLACE INTO analysis_cache (cache_key, results_json, created_at) VALUES (?, ?, ?)",
+                (cache_key, results_json, time.time()),
             )
             await db.execute("DELETE FROM analysis_cache WHERE created_at < ?", (time.time() - ANALYSIS_CACHE_TTL * 2,))
             await db.commit()

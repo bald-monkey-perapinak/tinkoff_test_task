@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from circuit_breaker import groq_breaker
-from config import GROQ_API_KEY, PROMPT_INPUT_MAX_LEN
+from config import ANALYSIS_MAX_VACANCIES, GROQ_API_KEY, PROMPT_INPUT_MAX_LEN
 from database import get_analysis_cache, set_analysis_cache
 from models import AnalysisResult, CriteriaInput, Vacancy
 
@@ -52,7 +52,7 @@ def _rule_based_analyze(vacancies: list[Vacancy], criteria: CriteriaInput) -> li
 
     date_threshold = _parse_date(criteria.date_from) if criteria.date_from else None
     filtered = []
-    for v in vacancies[:20]:
+    for v in vacancies[:ANALYSIS_MAX_VACANCIES]:
         if date_threshold and v.published_at:
             pub_date = _parse_date(v.published_at)
             if pub_date and pub_date < date_threshold:
@@ -140,9 +140,17 @@ def _parse_finalize_results(args: dict, valid_vacancies: list[Vacancy]) -> list[
             ))
         except Exception as e:
             logger.warning(f"Skipping invalid LLM result: {e}")
-    results.sort(key=lambda r: r.fit_score, reverse=True)
-    for i, r in enumerate(results):
-        r.rank = i + 1
+    valid_ranks = {r.rank for r in results}
+    all_valid = (
+        len(results) <= 5
+        and valid_ranks == set(range(1, len(results) + 1))
+    )
+    if not all_valid:
+        results.sort(key=lambda r: r.fit_score, reverse=True)
+        for i, r in enumerate(results):
+            r.rank = i + 1
+    else:
+        results.sort(key=lambda r: r.rank)
     return results[:5]
 
 
@@ -176,7 +184,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput, us
             results = _rule_based_analyze(vacancies, criteria)
             return results, AnalysisMetadata(analysis_type="rule_based_agent_empty", total_vacancies_pool=len(vacancies))
 
-        await set_analysis_cache(cache_key, json.dumps([r.model_dump() for r in results], ensure_ascii=False), "")
+        await set_analysis_cache(cache_key, json.dumps([r.model_dump() for r in results], ensure_ascii=False))
 
         return results, AnalysisMetadata(
             analysis_type=metadata.get("analysis_type", "llm"),

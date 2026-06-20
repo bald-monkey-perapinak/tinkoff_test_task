@@ -108,3 +108,21 @@ class TestBuildCriteriaText:
         criteria = CriteriaInput(direction="Python", date_from="2026-06-01")
         text = build_criteria_text(criteria)
         assert "- Дата публикации от: 2026-06-01" in text
+
+    def test_negative_salary_ignored(self, tmp_path):
+        criteria_path = tmp_path / "criteria.md"
+        criteria_path.write_text("- Минимальная зарплата: -5000\n", encoding="utf-8")
+        result = parse_criteria_file(str(criteria_path))
+        assert result.min_salary is None
+
+    def test_huge_salary_ignored(self, tmp_path):
+        criteria_path = tmp_path / "criteria.md"
+        criteria_path.write_text("- Минимальная зарплата: 99999999999\n", encoding="utf-8")
+        result = parse_criteria_file(str(criteria_path))
+        assert result.min_salary is None
+
+    def test_zero_salary_accepted(self, tmp_path):
+        criteria_path = tmp_path / "criteria.md"
+        criteria_path.write_text("- Минимальная зарплата: 0\n", encoding="utf-8")
+        result = parse_criteria_file(str(criteria_path))
+        assert result.min_salary == 0

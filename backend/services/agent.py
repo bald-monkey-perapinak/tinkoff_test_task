@@ -2,12 +2,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 
 from circuit_breaker import groq_breaker
 from config import (
+    AGENT_TRACE_ENABLED,
     BASE_DELAY,
     GROQ_API_KEY,
     LLM_MAX_TOKENS,
@@ -30,6 +32,7 @@ from services.analyzer import (
     _sanitize,
     _sanitize_vacancy_field,
 )
+from services.tracing import AgentTracer
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +384,7 @@ class VacancyAgent:
 
     def __init__(self):
         self.state = AgentState()
+        self.tracer = AgentTracer() if AGENT_TRACE_ENABLED else None
 
     async def run(
         self,
@@ -442,18 +446,32 @@ class VacancyAgent:
             existing_ids={v.id for v in vacancies},
         )
 
+        trace_start = time.time()
+        if self.tracer:
+            self.tracer.start_trace(user_key)
+
         memory_context = await _load_memory_context(user_key, criteria)
         self.state.memory_context = memory_context
 
         plan = await self._plan(criteria, memory_context)
         if plan is None or not plan.steps:
             logger.warning("[Agent] Planning failed, falling back to rule-based")
+            if self.tracer:
+                self.tracer.add_step("planning", "failed", decision="fall_back_to_rule_based")
+                self.tracer.finish(None, int((time.time() - trace_start) * 1000))
             return await self._run_hybrid(vacancies, criteria, user_key)
 
         self.state.plan = plan
         logger.info(f"[Agent] Plan created: {len(plan.steps)} steps. Goal: {plan.goal}")
         for step in plan.steps:
             logger.info(f"[Agent] Step {step.step_id}: {step.action} — {step.reason}")
+
+        if self.tracer:
+            self.tracer.add_step(
+                "planning", "completed",
+                decision=f"plan with {len(plan.steps)} steps",
+                reasoning=plan.goal,
+            )
 
         from services.hh_client import search_vacancies
         results, metadata = await self._execute(criteria, search_vacancies)
@@ -464,6 +482,11 @@ class VacancyAgent:
             overall_reflection = f"Quality: {last.quality_assessment}. Strategy: {last.strategy_adjustment}. Searches: {self.state.total_searches}. New vacancies: {self.state.total_new_vacancies}."
 
         await _save_to_memory(user_key, criteria, results, overall_reflection)
+
+        if self.tracer:
+            duration_ms = int((time.time() - trace_start) * 1000)
+            avg_score = sum(r.fit_score for r in results) / len(results) if results else 0
+            self.tracer.finish(None, duration_ms, quality_score=avg_score)
 
         return results, {
             "analysis_type": metadata.get("analysis_type", "llm"),
@@ -532,6 +555,12 @@ class VacancyAgent:
             self.state.iterations_used = iteration + 1
             logger.info(f"[Agent] Iteration {iteration + 1}: {len(self.state.all_vacancies)} vacancies in pool")
 
+            if self.tracer:
+                self.tracer.add_step(
+                    f"iteration_{iteration + 1}", "executing",
+                    decision=f"pool_size={len(self.state.all_vacancies)}",
+                )
+
             messages = self.state.messages.copy()
             prompt = _build_execution_prompt(
                 self.state.all_vacancies, criteria, iteration, self.state,
@@ -578,11 +607,19 @@ class VacancyAgent:
                 logger.info(f"[Agent] Tool call: {func_name}({json.dumps(args, ensure_ascii=False)[:200]})")
 
                 if func_name == "search_vacancies":
+                    tool_start = time.time()
                     result = await self._handle_search(args, hh_search)
+                    tool_duration = int((time.time() - tool_start) * 1000)
+                    if self.tracer:
+                        self.tracer.add_tool_call("search_vacancies", args, result[:200], tool_duration)
                     messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
                 elif func_name == "reflect_and_adjust":
+                    tool_start = time.time()
                     result = self._handle_reflection(args)
+                    tool_duration = int((time.time() - tool_start) * 1000)
+                    if self.tracer:
+                        self.tracer.add_tool_call("reflect_and_adjust", args, result[:200], tool_duration)
                     messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
                     reflection = self.state.reflections[-1] if self.state.reflections else None
@@ -605,6 +642,8 @@ class VacancyAgent:
                         break
 
                 elif func_name == "finalize_report":
+                    if self.tracer:
+                        self.tracer.add_tool_call("finalize_report", args, f"results={len(args.get('results', []))}", 0)
                     results = _parse_finalize_results(args, self.state.all_vacancies)
                     overall_summary = str(args.get("overall_summary", ""))[:500]
                     logger.info(f"[Agent] Finalized: {len(results)} results after {self.state.iterations_used} iterations, pool: {len(self.state.all_vacancies)}")
@@ -621,6 +660,9 @@ class VacancyAgent:
                 })
                 self.state.messages = messages
                 continue
+
+            if self.state.plan and self.state.current_step < len(self.state.plan.steps) - 1:
+                self.state.current_step += 1
 
             self.state.messages = messages
 
@@ -684,6 +726,9 @@ class VacancyAgent:
         )
         self.state.reflections.append(reflection)
         self.state.last_reflection_at = self.state.total_searches
+
+        if self.tracer:
+            self.tracer.add_reasoning(f"Iteration {reflection.iteration}: quality={reflection.quality_assessment}, continue={reflection.should_continue}")
 
         logger.info(f"[Agent] Reflection: quality={reflection.quality_assessment}, continue={reflection.should_continue}")
 

@@ -6,7 +6,7 @@ from models import AnalysisResult, Vacancy
 def _escape_md(text: str) -> str:
     if not text:
         return ""
-    for ch in ("\\", "*", "_", "~", "#", "[", "]", "|"):
+    for ch in ("\\", "*", "_", "~", "#", "[", "]", "|", "`"):
         text = text.replace(ch, "\\" + ch)
     return text
 

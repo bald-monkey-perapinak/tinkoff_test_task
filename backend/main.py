@@ -12,6 +12,7 @@ from circuit_breaker import groq_breaker, hh_breaker
 from cli import build_criteria_text
 from config import (
     ALLOWED_ORIGINS,
+    ANALYSIS_MAX_VACANCIES,
     DB_PATH,
     GROQ_API_KEY,
     MAX_UPLOAD_SIZE,
@@ -306,7 +307,7 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
             raise HTTPException(status_code=404, detail="No vacancies to analyze")
 
         results, metadata = await asyncio.wait_for(
-            analyze_with_llm(vacancies_to_analyze[:10], criteria),
+            analyze_with_llm(vacancies_to_analyze[:ANALYSIS_MAX_VACANCIES], criteria),
             timeout=60.0,
         )
         criteria_text = build_criteria_text(criteria)
@@ -349,7 +350,7 @@ async def api_report(request: Request):
         if not all_vacancies:
             return PlainTextResponse("No data. Upload vacancies or run search first.", status_code=404)
         criteria = CriteriaInput()
-        results, metadata = await analyze_with_llm(all_vacancies[:10], criteria)
+        results, metadata = await analyze_with_llm(all_vacancies[:ANALYSIS_MAX_VACANCIES], criteria)
         report = generate_report(all_vacancies, results, analysis_type=metadata.analysis_type, overall_summary=metadata.overall_summary)
         logger.info(f"[{request.state.request_id}] Report generated: {len(all_vacancies)} vacancies, type={metadata.analysis_type}")
         return PlainTextResponse(report, media_type="text/markdown")
@@ -539,7 +540,7 @@ async def api_export(request: Request, format: str = Query(default="json")):
             raise HTTPException(status_code=404, detail="No data to export")
 
         criteria = CriteriaInput()
-        results, _metadata = await analyze_with_llm(all_vacancies[:10], criteria)
+        results, _metadata = await analyze_with_llm(all_vacancies[:ANALYSIS_MAX_VACANCIES], criteria)
 
         if format == "csv":
             output = io.StringIO()

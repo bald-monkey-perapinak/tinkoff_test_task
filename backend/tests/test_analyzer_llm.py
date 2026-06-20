@@ -101,6 +101,39 @@ class TestParseFinalizeResults:
         results = _parse_finalize_results({"results": []}, [])
         assert results == []
 
+    def test_preserves_valid_llm_ranks(self, sample_vacancy):
+        vacancy2 = Vacancy(
+            id="vac-2", title="Backend Dev", company="Co2",
+            city="Moscow", salary="120000", salary_from=120000, salary_to=None,
+            schedule="remote", experience="between1And3",
+            skills=["python"], url="", description="", published_at="2025-01-01", is_mock=True,
+        )
+        args = {"results": [
+            {"vacancy_id": "vac-1", "rank": 2, "fit_score": 7, "why_fits": "Good"},
+            {"vacancy_id": "vac-2", "rank": 1, "fit_score": 9, "why_fits": "Great"},
+        ]}
+        results = _parse_finalize_results(args, [sample_vacancy, vacancy2])
+        assert len(results) == 2
+        ranks = [r.rank for r in results]
+        assert ranks == [1, 2]
+
+    def test_fallback_ranking_on_invalid_ranks(self, sample_vacancy):
+        vacancy2 = Vacancy(
+            id="vac-2", title="Backend Dev", company="Co2",
+            city="Moscow", salary="120000", salary_from=120000, salary_to=None,
+            schedule="remote", experience="between1And3",
+            skills=["python"], url="", description="", published_at="2025-01-01", is_mock=True,
+        )
+        args = {"results": [
+            {"vacancy_id": "vac-1", "rank": 3, "fit_score": 7, "why_fits": "Good"},
+            {"vacancy_id": "vac-2", "rank": 3, "fit_score": 9, "why_fits": "Great"},
+        ]}
+        results = _parse_finalize_results(args, [sample_vacancy, vacancy2])
+        assert len(results) == 2
+        ranks = [r.rank for r in results]
+        assert ranks == [1, 2]
+        assert results[0].fit_score == 9
+
 
 class TestBuildAgentPrompt:
     def test_contains_criteria(self, sample_vacancy, sample_criteria):

@@ -4,6 +4,7 @@ import logging
 import pathlib
 import sys
 
+from config import ANALYSIS_MAX_VACANCIES
 from models import CriteriaInput
 from services.analyzer import analyze_with_llm
 from services.parser import parse_uploaded_file
@@ -40,9 +41,13 @@ def parse_criteria_file(path: str) -> CriteriaInput:
             data[field] = value.lower() in ("да", "yes", "true", "1")
         elif field == "min_salary":
             try:
-                data[field] = int(value)
+                val = int(value)
+                if val < 0 or val > 10_000_000:
+                    _logger.warning(f"min_salary={val} is outside reasonable range (0-10000000), ignoring")
+                else:
+                    data[field] = val
             except ValueError:
-                pass
+                _logger.warning(f"Non-numeric min_salary value: {value}")
         elif field == "key_skills":
             data[field] = [s.strip() for s in value.split(",") if s.strip()]
         else:
@@ -60,9 +65,13 @@ def interactive_criteria() -> CriteriaInput:
     min_salary = None
     if salary_raw:
         try:
-            min_salary = int(salary_raw)
+            val = int(salary_raw)
+            if val < 0 or val > 10_000_000:
+                print(f"  Warning: min_salary={val} is outside reasonable range (0-10000000), ignoring", file=sys.stderr)
+            else:
+                min_salary = val
         except ValueError:
-            pass
+            print(f"  Warning: non-numeric min_salary value: {salary_raw}", file=sys.stderr)
     experience_level = input("  Уровень опыта (без опыта / 1-3 года / 3-6 лет): ").strip()
     skills_raw = input("  Навыки (через запятую): ").strip()
     key_skills = [s.strip() for s in skills_raw.split(",") if s.strip()] if skills_raw else []
@@ -113,7 +122,7 @@ async def run_pipeline(file_path: str, criteria: CriteriaInput, output_path: str
         return 1
 
     logger.info("[2/3] Агентный анализ через LLM...")
-    results, metadata = await analyze_with_llm(vacancies[:20], criteria)
+    results, metadata = await analyze_with_llm(vacancies[:ANALYSIS_MAX_VACANCIES], criteria)
     logger.info(f"  Проанализировано: {len(results)} вакансий")
     logger.info(f"  Тип анализа: {metadata.analysis_type}")
     logger.info(f"  Итераций агента: {metadata.iterations_used}")
@@ -188,11 +197,18 @@ def main():
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(130)
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        report = generate_report([], [], criteria_text=build_criteria_text(criteria), overall_summary=f"Fatal error: {e}")
+    except (OSError, ValueError) as e:
+        logger.error(f"Pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
+        report = generate_report([], [], criteria_text=build_criteria_text(criteria), overall_summary=f"Error: {e}")
         pathlib.Path(args.output).write_text(report, encoding="utf-8")
         sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     sys.exit(exit_code)
 
 

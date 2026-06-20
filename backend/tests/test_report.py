@@ -151,3 +151,14 @@ class TestGenerateReport:
         assert "| Формат |" in report
         assert "| Опыт |" in report
         assert "| Оценка соответствия |" in report
+
+    def test_escapes_backticks_in_why_fits(self):
+        """Backticks in why_fits are escaped to prevent inline code rendering."""
+        result = AnalysisResult(
+            vacancy_id="vac-1", rank=1, fit_score=8,
+            why_fits="Use `python` and `fastapi` for this role",
+            concerns="", summary="Test",
+        )
+        report = generate_report(vacancies=[], results=[result])
+        assert "\\`python\\`" in report
+        assert "\\`fastapi\\`" in report

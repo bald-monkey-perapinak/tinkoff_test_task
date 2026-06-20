@@ -4,7 +4,7 @@ import asyncio
 import logging
 import random
 from typing import Optional
-from config import HH_API_BASE, HH_USER_AGENT, HH_PROXY, HH_PROXY_LIST, DATA_DIR
+from config import HH_API_BASE, HH_USER_AGENT, HH_PROXY, HH_PROXY_LIST, DATA_DIR, MAX_RETRIES, BASE_DELAY
 from models import Vacancy, SearchParams
 from circuit_breaker import hh_breaker
 
@@ -16,9 +16,7 @@ _cache_loaded = False
 _cache_lock = asyncio.Lock()
 _proxy_list: list[str] = []
 _proxy_index = 0
-
-MAX_RETRIES = 3
-BASE_DELAY = 1.0
+_shared_client: httpx.AsyncClient | None = None
 
 HEADERS = {
     "User-Agent": HH_USER_AGENT,
@@ -89,7 +87,7 @@ def _get_mock_vacancies(query: str) -> list[Vacancy]:
 
 
 async def _load_dictionaries():
-    global _cache_loaded
+    global _cache_loaded, _shared_client
     if _cache_loaded:
         return
     async with _cache_lock:
@@ -98,29 +96,30 @@ async def _load_dictionaries():
         _load_proxy_list()
         proxy = _get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=proxy) as client:
-                for attempt in range(MAX_RETRIES):
-                    try:
-                        resp = await client.get(f"{HH_API_BASE}/areas", headers=HEADERS, timeout=10)
-                        if resp.status_code == 200:
-                            for area in resp.json():
-                                _areas_cache[str(area["id"])] = area["name"]
-                                for sub in area.get("areas", []):
-                                    _areas_cache[str(sub["id"])] = sub["name"]
+            if _shared_client is None:
+                _shared_client = httpx.AsyncClient(proxy=proxy, timeout=15)
+            for attempt in range(MAX_RETRIES):
+                try:
+                    resp = await _shared_client.get(f"{HH_API_BASE}/areas", headers=HEADERS)
+                    if resp.status_code == 200:
+                        for area in resp.json():
+                            _areas_cache[str(area["id"])] = area["name"]
+                            for sub in area.get("areas", []):
+                                _areas_cache[str(sub["id"])] = sub["name"]
 
-                        resp = await client.get(f"{HH_API_BASE}/professional_roles", headers=HEADERS, timeout=10)
-                        if resp.status_code == 200:
-                            for role in resp.json():
-                                _roles_cache[str(role["id"])] = role["name"]
-                        _cache_loaded = True
-                        return
-                    except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
-                        delay = BASE_DELAY * (2 ** attempt)
-                        logger.warning(f"hh.ru dictionaries load attempt {attempt + 1} failed: {e}, retrying in {delay}s")
-                        await asyncio.sleep(delay)
-                    except Exception as e:
-                        logger.warning(f"Failed to load hh.ru dictionaries: {e}")
-                        return
+                    resp = await _shared_client.get(f"{HH_API_BASE}/professional_roles", headers=HEADERS)
+                    if resp.status_code == 200:
+                        for role in resp.json():
+                            _roles_cache[str(role["id"])] = role["name"]
+                    _cache_loaded = True
+                    return
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                    delay = BASE_DELAY * (2 ** attempt)
+                    logger.warning(f"hh.ru dictionaries load attempt {attempt + 1} failed: {e}, retrying in {delay}s")
+                    await asyncio.sleep(delay)
+                except Exception as e:
+                    logger.warning(f"Failed to load hh.ru dictionaries: {e}")
+                    return
         except Exception as e:
             logger.warning(f"Failed to create hh.ru client: {e}")
         logger.error("Failed to load hh.ru dictionaries after all retries")
@@ -187,7 +186,7 @@ async def search_vacancies(params: SearchParams) -> tuple[list[Vacancy], int]:
     await _load_dictionaries()
     _load_proxy_list()
 
-    if not hh_breaker.call_allowed():
+    if not await hh_breaker.call_allowed():
         logger.warning("hh.ru circuit breaker open, returning mock data")
         mock = _get_mock_vacancies(params.query)
         return mock, len(mock)
@@ -211,27 +210,27 @@ async def search_vacancies(params: SearchParams) -> tuple[list[Vacancy], int]:
 
     last_error = None
     for attempt in range(MAX_RETRIES):
-        proxy = _get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=proxy) as client:
-                resp = await client.get(
-                    f"{HH_API_BASE}/vacancies",
-                    params=query_params,
-                    headers=HEADERS,
-                    timeout=15,
-                )
-                if resp.status_code == 429:
-                    retry_after = int(resp.headers.get("Retry-After", BASE_DELAY * (2 ** attempt)))
-                    logger.warning(f"hh.ru rate limited, waiting {retry_after}s")
-                    await asyncio.sleep(retry_after)
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                items = data.get("items", [])
-                total = data.get("found", 0)
-                vacancies = [_hh_to_vacancy(item) for item in items[:50]]
-                hh_breaker.record_success()
-                return vacancies, total
+            if _shared_client is None:
+                proxy = _get_proxy()
+                _shared_client = httpx.AsyncClient(proxy=proxy, timeout=15)
+            resp = await _shared_client.get(
+                f"{HH_API_BASE}/vacancies",
+                params=query_params,
+                headers=HEADERS,
+            )
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", BASE_DELAY * (2 ** attempt)))
+                logger.warning(f"hh.ru rate limited, waiting {retry_after}s")
+                await asyncio.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("items", [])
+            total = data.get("found", 0)
+            vacancies = [_hh_to_vacancy(item) for item in items[:50]]
+            await hh_breaker.record_success()
+            return vacancies, total
         except httpx.HTTPStatusError as e:
             last_error = e
             delay = BASE_DELAY * (2 ** attempt) + random.uniform(0, BASE_DELAY * 0.3)
@@ -247,7 +246,7 @@ async def search_vacancies(params: SearchParams) -> tuple[list[Vacancy], int]:
             break
 
     logger.warning(f"hh.ru search failed after {MAX_RETRIES} retries: {last_error}")
-    hh_breaker.record_failure()
+    await hh_breaker.record_failure()
     logger.info(f"Falling back to mock data for query='{params.query}'")
     mock = _get_mock_vacancies(params.query)
     return mock, len(mock)

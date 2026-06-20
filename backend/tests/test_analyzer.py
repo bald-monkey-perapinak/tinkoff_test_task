@@ -1,8 +1,4 @@
 import pytest
-import sys
-import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models import Vacancy, CriteriaInput, AnalysisResult
 from services.analyzer import _rule_based_analyze, _sanitize, _parse_date

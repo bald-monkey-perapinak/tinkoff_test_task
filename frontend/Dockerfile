@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:20.18.0-alpine AS build
 
 WORKDIR /app
 
@@ -8,8 +8,10 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginx:1.27.2-alpine
 
+RUN rm /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80

@@ -80,7 +80,7 @@ export function SubscriptionsTab({ currentFilters }: Props) {
 
   return (
     <div className="section">
-      {error && <div className="error-banner" style={{ color: 'var(--danger, #e74c3c)', padding: 8, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div role="alert" className="error-banner" style={{ color: 'var(--danger, #e74c3c)', padding: 8, marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       <button className="btn btn-primary" onClick={handleCreate} style={{ width: '100%', marginBottom: 12 }}>
         Создать подписку по текущим фильтрам

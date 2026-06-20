@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import logging
+import shutil
 import uuid
 import time
 from contextlib import asynccontextmanager
@@ -18,11 +19,13 @@ from config import (
     TELEGRAM_WEBAPP_URL, ALLOWED_ORIGINS, MAX_UPLOAD_SIZE,
     MAX_VACANCIES_PER_SESSION, SESSION_TTL_SECONDS, RATE_LIMITS,
     HH_API_BASE, HH_PROXY, GROQ_API_KEY, DB_PATH,
+    NOTIFICATION_INTERVAL, validate_startup_config,
 )
 from database import (
     init_db, add_favorite, remove_favorite, get_favorites,
     add_subscription, remove_subscription, get_active_subscriptions,
     is_vacancy_seen, mark_vacancy_seen,
+    batch_is_vacancy_seen, batch_mark_vacancies_seen,
     save_session, get_session, cleanup_expired_sessions, get_all_session_vacancies,
     backup_database,
 )
@@ -34,15 +37,13 @@ from services.report import generate_report
 from services.notifier import notify_new_vacancies
 from auth import require_telegram_auth
 from circuit_breaker import hh_breaker, groq_breaker
+from cli import build_criteria_text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 _background_task: asyncio.Task | None = None
-
-
-NOTIFICATION_INTERVAL = 300
 
 
 async def _check_subscriptions() -> int:
@@ -69,15 +70,12 @@ async def _check_subscriptions() -> int:
             )
             vacancies, _ = await search_vacancies(params)
 
-            new_vacancies = []
-            for v in vacancies:
-                if not await is_vacancy_seen(sub.chat_id, v.id):
-                    new_vacancies.append(v)
+            seen = await batch_is_vacancy_seen(sub.chat_id, [v.id for v in vacancies])
+            new_vacancies = [v for v in vacancies if v.id not in seen]
 
             if new_vacancies:
                 sent = await notify_new_vacancies(sub.chat_id, new_vacancies)
-                for v in new_vacancies:
-                    await mark_vacancy_seen(sub.chat_id, v.id)
+                await batch_mark_vacancies_seen(sub.chat_id, [v.id for v in new_vacancies])
                 total_notified += sent
                 logger.info(f"Sent {sent} notifications to chat {sub.chat_id}")
         except Exception as e:
@@ -103,6 +101,7 @@ async def _notification_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _background_task
+    validate_startup_config()
     await init_db()
     logger.info("Database initialized")
     await backup_database()
@@ -136,19 +135,27 @@ async def validate_telegram_auth(request: Request, call_next):
     from auth import validate_telegram_init_data
     from config import TELEGRAM_BOT_TOKEN
 
-    if TELEGRAM_BOT_TOKEN and request.url.path.startswith("/api/"):
+    if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/health"):
+        if not TELEGRAM_BOT_TOKEN:
+            return JSONResponse(
+                status_code=503,
+                detail="Server misconfigured: TELEGRAM_BOT_TOKEN not set",
+            )
         init_data = request.headers.get("Telegram-Init-Data", "")
-        if init_data:
-            result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
-            if result is None:
-                return JSONResponse(status_code=403, detail="Invalid Telegram initData")
-            request.state.telegram_user = result
+        if not init_data:
+            return JSONResponse(status_code=401, detail="Missing Telegram-Init-Data header")
+        result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
+        if result is None:
+            return JSONResponse(status_code=403, detail="Invalid Telegram initData")
+        request.state.telegram_user = result
 
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.hh.ru; frame-ancestors 'none'"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -271,18 +278,10 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
             raise HTTPException(status_code=404, detail="No vacancies to analyze")
 
         results = await asyncio.wait_for(
-            analyze_with_llm(vacancies_to_analyze[:20], criteria),
+            analyze_with_llm(vacancies_to_analyze[:10], criteria),
             timeout=30.0,
         )
-        criteria_text = "\n".join(filter(None, [
-            f"- Направление: {criteria.direction}" if criteria.direction else None,
-            f"- Город: {criteria.city}" if criteria.city else None,
-            f"- Только удалёнка: да" if criteria.remote_only else None,
-            f"- Минимальная зарплата: {criteria.min_salary}" if criteria.min_salary else None,
-            f"- Уровень: {criteria.experience_level}" if criteria.experience_level else None,
-            f"- Навыки: {', '.join(criteria.key_skills)}" if criteria.key_skills else None,
-            f"- Дата публикации от: {criteria.date_from}" if criteria.date_from else None,
-        ]))
+        criteria_text = build_criteria_text(criteria)
 
         report = generate_report(vacancies_to_analyze, results, criteria_text)
 
@@ -319,7 +318,7 @@ async def api_report(request: Request):
         if not all_vacancies:
             return PlainTextResponse("No data. Upload vacancies or run search first.", status_code=404)
         criteria = CriteriaInput()
-        results = await analyze_with_llm(all_vacancies[:20], criteria)
+        results = await analyze_with_llm(all_vacancies[:10], criteria)
         report = generate_report(all_vacancies, results)
         logger.info(f"[{request.state.request_id}] Report generated: {len(all_vacancies)} vacancies")
         return PlainTextResponse(report, media_type="text/markdown")
@@ -330,10 +329,22 @@ async def api_report(request: Request):
         raise HTTPException(status_code=500, detail="Report generation failed")
 
 
+def _get_chat_id(request: Request) -> int:
+    user = getattr(request.state, "telegram_user", None)
+    if user and "user" in user:
+        try:
+            return int(user["user"].split(",")[0]) if isinstance(user["user"], str) else int(user["id"])
+        except (ValueError, KeyError, TypeError):
+            pass
+    return 0
+
+
 @app.post("/api/favorites")
 @limiter.limit(RATE_LIMITS["default"])
 async def api_add_favorite(request: Request, fav: Favorite):
     try:
+        chat_id = _get_chat_id(request)
+        fav.chat_id = chat_id
         await add_favorite(fav)
         return {"status": "ok"}
     except Exception as e:
@@ -345,7 +356,8 @@ async def api_add_favorite(request: Request, fav: Favorite):
 @limiter.limit(RATE_LIMITS["default"])
 async def api_remove_favorite(request: Request, vacancy_id: str):
     try:
-        await remove_favorite(vacancy_id)
+        chat_id = _get_chat_id(request)
+        await remove_favorite(chat_id, vacancy_id)
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"[{getattr(request.state, 'request_id', '?')}] Remove favorite failed: {e}")
@@ -356,7 +368,8 @@ async def api_remove_favorite(request: Request, vacancy_id: str):
 @limiter.limit(RATE_LIMITS["default"])
 async def api_get_favorites(request: Request):
     try:
-        favs = await get_favorites()
+        chat_id = _get_chat_id(request)
+        favs = await get_favorites(chat_id)
         return {"favorites": [f.model_dump() for f in favs]}
     except Exception as e:
         logger.error(f"[{getattr(request.state, 'request_id', '?')}] Get favorites failed: {e}")
@@ -378,7 +391,8 @@ async def api_subscribe(request: Request, sub: Subscription):
 @limiter.limit(RATE_LIMITS["default"])
 async def api_unsubscribe(request: Request, sub_id: int):
     try:
-        await remove_subscription(sub_id)
+        chat_id = _get_chat_id(request)
+        await remove_subscription(chat_id, sub_id)
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"[{getattr(request.state, 'request_id', '?')}] Unsubscribe failed: {e}")
@@ -389,7 +403,8 @@ async def api_unsubscribe(request: Request, sub_id: int):
 @limiter.limit(RATE_LIMITS["default"])
 async def api_get_subscriptions(request: Request):
     try:
-        subs = await get_active_subscriptions()
+        chat_id = _get_chat_id(request)
+        subs = await get_active_subscriptions(chat_id)
         return {"subscriptions": [s.model_dump() for s in subs]}
     except Exception as e:
         logger.error(f"[{getattr(request.state, 'request_id', '?')}] Get subscriptions failed: {e}")
@@ -440,7 +455,6 @@ async def api_health_live():
 
 @app.get("/api/health/ready")
 async def api_health_ready():
-    import shutil
     checks = {}
     status = "ok"
 
@@ -450,7 +464,7 @@ async def api_health_ready():
             await asyncio.wait_for(db.execute("SELECT 1"), timeout=2)
         checks["database"] = "ok"
     except Exception as e:
-        checks["database"] = f"error: {e}"
+        checks["database"] = "error: database unavailable"
         status = "degraded"
 
     checks["hh_circuit"] = hh_breaker.get_state()
@@ -458,7 +472,6 @@ async def api_health_ready():
 
     try:
         free_gb = shutil.disk_usage(DB_PATH.parent).free / 1e9
-        checks["disk_free_gb"] = round(free_gb, 2)
         if free_gb < 0.5:
             status = "degraded"
     except Exception:
@@ -481,7 +494,7 @@ async def api_export(request: Request, format: str = Query(default="json")):
             raise HTTPException(status_code=404, detail="No data to export")
 
         criteria = CriteriaInput()
-        results = await analyze_with_llm(all_vacancies[:20], criteria)
+        results = await analyze_with_llm(all_vacancies[:10], criteria)
 
         if format == "csv":
             output = io.StringIO()

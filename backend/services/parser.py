@@ -19,8 +19,14 @@ def _truncate(text: str) -> str:
 
 
 def _csv_safe(value: str) -> str:
-    if value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
-        return "'" + value
+    if not value:
+        return value
+    dangerous_prefixes = ('=', '+', '-', '@', '\t', '\r')
+    for i, ch in enumerate(value):
+        if ch in dangerous_prefixes:
+            return "'" + value
+        if not ch.isspace():
+            break
     return value
 
 

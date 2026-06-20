@@ -2,6 +2,12 @@ from datetime import datetime
 from models import Vacancy, AnalysisResult
 
 
+def _escape_md(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace("|", "\\|").replace("[", "\\[").replace("]", "\\]").replace("(", "\\(").replace(")", "\\)")
+
+
 def generate_report(
     vacancies: list[Vacancy],
     results: list[AnalysisResult],
@@ -33,16 +39,16 @@ def generate_report(
         lines.append(f"")
         lines.append(f"| Параметр | Значение |")
         lines.append(f"|----------|----------|")
-        lines.append(f"| Компания | {v.company if v else '?'} |")
-        lines.append(f"| Город | {v.city if v else '?'} |")
-        lines.append(f"| Зарплата | {v.salary if v else 'не указана'} |")
-        lines.append(f"| Формат | {v.schedule if v else '?'} |")
-        lines.append(f"| Опыт | {v.experience if v else '?'} |")
+        lines.append(f"| Компания | {_escape_md(v.company if v else '?')} |")
+        lines.append(f"| Город | {_escape_md(v.city if v else '?')} |")
+        lines.append(f"| Зарплата | {_escape_md(v.salary if v else 'не указана')} |")
+        lines.append(f"| Формат | {_escape_md(v.schedule if v else '?')} |")
+        lines.append(f"| Опыт | {_escape_md(v.experience if v else '?')} |")
         lines.append(f"| Оценка соответствия | {r.fit_score}/10 |")
         lines.append(f"")
-        lines.append(f"**Почему подходит:** {r.why_fits}")
+        lines.append(f"**Почему подходит:** {_escape_md(r.why_fits)}")
         lines.append(f"")
-        lines.append(f"**Что смущает:** {r.concerns}")
+        lines.append(f"**Что смущает:** {_escape_md(r.concerns)}")
         if r.recommendation:
             lines.append(f"")
             lines.append(f"**Рекомендация:** {r.recommendation}")

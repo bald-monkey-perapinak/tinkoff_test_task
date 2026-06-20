@@ -4,12 +4,10 @@ import logging
 import time
 import asyncio
 import shutil
-from config import DB_PATH, SESSION_TTL_SECONDS
+from config import DB_PATH, SESSION_TTL_SECONDS, MAX_SESSION_PAYLOAD_BYTES, ANALYSIS_CACHE_TTL
 from models import Favorite, Subscription, Vacancy
 
 logger = logging.getLogger(__name__)
-
-MAX_SESSION_PAYLOAD_BYTES = 2 * 1024 * 1024  # 2MB
 
 
 async def init_db():
@@ -20,10 +18,12 @@ async def init_db():
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS favorites (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    vacancy_id TEXT UNIQUE NOT NULL,
+                    chat_id INTEGER NOT NULL DEFAULT 0,
+                    vacancy_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     company TEXT NOT NULL,
-                    url TEXT DEFAULT ''
+                    url TEXT DEFAULT '',
+                    UNIQUE(chat_id, vacancy_id)
                 )
             """)
             await db.execute("""
@@ -60,6 +60,9 @@ async def init_db():
                 )
             """)
             await db.commit()
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_analysis_cache_created_at ON analysis_cache(created_at)")
+            await db.commit()
             logger.info("Database initialized with WAL mode")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
@@ -70,8 +73,8 @@ async def add_favorite(fav: Favorite):
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                "INSERT OR IGNORE INTO favorites (vacancy_id, title, company, url) VALUES (?, ?, ?, ?)",
-                (fav.vacancy_id, fav.title, fav.company, fav.url)
+                "INSERT OR IGNORE INTO favorites (chat_id, vacancy_id, title, company, url) VALUES (?, ?, ?, ?, ?)",
+                (fav.chat_id, fav.vacancy_id, fav.title, fav.company, fav.url)
             )
             await db.commit()
     except Exception as e:
@@ -79,21 +82,21 @@ async def add_favorite(fav: Favorite):
         raise
 
 
-async def remove_favorite(vacancy_id: str):
+async def remove_favorite(chat_id: int, vacancy_id: str):
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("DELETE FROM favorites WHERE vacancy_id = ?", (vacancy_id,))
+            await db.execute("DELETE FROM favorites WHERE chat_id = ? AND vacancy_id = ?", (chat_id, vacancy_id))
             await db.commit()
     except Exception as e:
         logger.error(f"Failed to remove favorite: {e}")
         raise
 
 
-async def get_favorites() -> list[Favorite]:
+async def get_favorites(chat_id: int) -> list[Favorite]:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM favorites ORDER BY id DESC")
+            cursor = await db.execute("SELECT * FROM favorites WHERE chat_id = ? ORDER BY id DESC", (chat_id,))
             rows = await cursor.fetchall()
             return [Favorite(**dict(row)) for row in rows]
     except Exception as e:
@@ -115,21 +118,24 @@ async def add_subscription(sub: Subscription) -> int:
         raise
 
 
-async def remove_subscription(sub_id: int):
+async def remove_subscription(chat_id: int, sub_id: int):
     try:
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
+            await db.execute("DELETE FROM subscriptions WHERE id = ? AND chat_id = ?", (sub_id, chat_id))
             await db.commit()
     except Exception as e:
         logger.error(f"Failed to remove subscription: {e}")
         raise
 
 
-async def get_active_subscriptions() -> list[Subscription]:
+async def get_active_subscriptions(chat_id: int | None = None) -> list[Subscription]:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM subscriptions WHERE is_active = 1")
+            if chat_id is not None:
+                cursor = await db.execute("SELECT * FROM subscriptions WHERE is_active = 1 AND chat_id = ?", (chat_id,))
+            else:
+                cursor = await db.execute("SELECT * FROM subscriptions WHERE is_active = 1")
             rows = await cursor.fetchall()
             return [Subscription(**dict(row)) for row in rows]
     except Exception as e:
@@ -160,6 +166,36 @@ async def mark_vacancy_seen(chat_id: int, vacancy_id: str):
             await db.commit()
     except Exception as e:
         logger.error(f"Failed to mark vacancy seen: {e}")
+
+
+async def batch_is_vacancy_seen(chat_id: int, vacancy_ids: list[str]) -> set[str]:
+    if not vacancy_ids:
+        return set()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            placeholders = ",".join("?" * len(vacancy_ids))
+            cursor = await db.execute(
+                f"SELECT vacancy_id FROM seen_vacancies WHERE chat_id = ? AND vacancy_id IN ({placeholders})",
+                (chat_id, *vacancy_ids),
+            )
+            return {row[0] for row in await cursor.fetchall()}
+    except Exception as e:
+        logger.error(f"Failed to batch check seen vacancies: {e}")
+        return set()
+
+
+async def batch_mark_vacancies_seen(chat_id: int, vacancy_ids: list[str]):
+    if not vacancy_ids:
+        return
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.executemany(
+                "INSERT OR IGNORE INTO seen_vacancies (chat_id, vacancy_id) VALUES (?, ?)",
+                [(chat_id, vid) for vid in vacancy_ids],
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to batch mark vacancies seen: {e}")
 
 
 async def save_session(session_id: str, vacancies: list, created_at: float):
@@ -233,9 +269,6 @@ async def get_all_session_vacancies() -> list[Vacancy]:
         return []
 
 
-ANALYSIS_CACHE_TTL = 3600  # 1 hour
-
-
 async def get_analysis_cache(cache_key: str) -> dict | None:
     try:
         cutoff = time.time() - ANALYSIS_CACHE_TTL
@@ -260,7 +293,6 @@ async def set_analysis_cache(cache_key: str, results_json: str, report: str):
                 "INSERT OR REPLACE INTO analysis_cache (cache_key, results_json, report, created_at) VALUES (?, ?, ?, ?)",
                 (cache_key, results_json, report, time.time()),
             )
-            await db.commit()
             await db.execute("DELETE FROM analysis_cache WHERE created_at < ?", (time.time() - ANALYSIS_CACHE_TTL * 2,))
             await db.commit()
     except Exception as e:

@@ -1,10 +1,6 @@
 import pytest
-import sys
-import os
 import pathlib
 import tempfile
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models import CriteriaInput
 from cli import parse_criteria_file, build_criteria_text

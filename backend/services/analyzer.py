@@ -6,15 +6,12 @@ import asyncio
 import random
 from datetime import datetime
 from functools import partial
-from config import GROQ_API_KEY, PROMPT_INPUT_MAX_LEN, LLM_MODEL, LLM_TEMPERATURE, LLM_MAX_TOKENS
+from config import GROQ_API_KEY, PROMPT_INPUT_MAX_LEN, LLM_MODEL, LLM_TEMPERATURE, LLM_MAX_TOKENS, MAX_RETRIES, BASE_DELAY
 from models import Vacancy, CriteriaInput, AnalysisResult
 from database import get_analysis_cache, set_analysis_cache
 from circuit_breaker import groq_breaker
 
 logger = logging.getLogger(__name__)
-
-MAX_RETRIES = 3
-BASE_DELAY = 1.0
 
 RULE_BASED_RESULTS = [
     "Компания крупная, стажировка оплачиваемая — хороший старт.",
@@ -37,10 +34,7 @@ def _parse_date(date_str: str) -> datetime | None:
 
 
 def _sanitize(text: str) -> str:
-    if not text:
-        return ""
-    clean = re.sub(r'[^\w\s,.\-а-яА-ЯёЁa-zA-Z0-9;/:₽€$¥£]', '', text)
-    return clean[:PROMPT_INPUT_MAX_LEN]
+    return _sanitize_vacancy_field(text, PROMPT_INPUT_MAX_LEN)
 
 
 def _sanitize_vacancy_field(text: str, max_len: int) -> str:
@@ -103,8 +97,7 @@ def _rule_based_analyze(vacancies: list[Vacancy], criteria: CriteriaInput) -> li
 
     top = results[:5]
     if not top:
-        for r in results[:5]:
-            r.recommendation = "Нет подходящих вакансий. Попробуйте расширить критерии поиска."
+        pass
     elif all(r.fit_score < 5 for r in top):
         for r in top:
             r.recommendation = "Ни одна вакансия не набрала более 4 баллов. Рекомендуется расширить поиск или снизить требования."
@@ -146,7 +139,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
         logger.info(f"Cache hit for analysis: {cache_key[:8]}...")
         return [AnalysisResult(**r) for r in cached["results"]]
 
-    if not groq_breaker.call_allowed():
+    if not await groq_breaker.call_allowed():
         logger.warning("Groq circuit breaker open, using rule-based analysis")
         return _rule_based_analyze(vacancies, criteria)
 
@@ -214,7 +207,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
         last_error = None
         for attempt in range(MAX_RETRIES):
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 func = partial(
                     client.chat.completions.create,
                     model=LLM_MODEL,
@@ -227,7 +220,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
                     loop.run_in_executor(None, func),
                     timeout=15.0,
                 )
-                groq_breaker.record_success()
+                await groq_breaker.record_success()
                 break
             except asyncio.TimeoutError:
                 last_error = TimeoutError("Groq API call timed out after 15s")
@@ -246,7 +239,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
 
         if response is None:
             logger.error(f"Groq API exhausted all retries: {last_error}")
-            groq_breaker.record_failure()
+            await groq_breaker.record_failure()
             return _rule_based_analyze(vacancies, criteria)
 
         content = response.choices[0].message.content.strip()

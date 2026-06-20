@@ -38,6 +38,8 @@ export function VacancyList({ vacancies, favorites, onToggleFavorite, onOpenUrl 
               className="star-btn"
               onClick={() => onToggleFavorite(v)}
               title={favorites.has(v.id) ? 'Убрать из избранного' : 'В избранное'}
+              aria-label={favorites.has(v.id) ? 'Убрать из избранного' : 'В избранное'}
+              aria-pressed={favorites.has(v.id)}
             >
               {favorites.has(v.id) ? '★' : '☆'}
             </button>

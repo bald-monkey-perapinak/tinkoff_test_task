@@ -49,8 +49,9 @@ async def require_telegram_auth(request: Request) -> dict:
     init_data = request.headers.get("Telegram-Init-Data", "")
     result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
     if result is None:
-        if TELEGRAM_BOT_TOKEN and init_data:
-            raise HTTPException(status_code=403, detail="Invalid Telegram initData")
-        logger.debug("Telegram auth skipped (no bot token or no initData)")
-        return {}
+        if not TELEGRAM_BOT_TOKEN:
+            raise HTTPException(status_code=503, detail="Server misconfigured: TELEGRAM_BOT_TOKEN not set")
+        if not init_data:
+            raise HTTPException(status_code=401, detail="Missing Telegram-Init-Data header")
+        raise HTTPException(status_code=403, detail="Invalid Telegram initData")
     return result

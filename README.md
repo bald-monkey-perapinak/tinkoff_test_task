@@ -51,7 +51,7 @@ npm run dev
 
 #### Деплой
 ```bash
-# Собрайте фронтенд
+# Соберите фронтенд
 cd frontend
 npm run build
 
@@ -249,6 +249,8 @@ python cli.py --file vacancies.json --criteria criteria.md --output report.md
 | DELETE | `/api/subscribe/{id}` | Удалить подписку |
 | GET | `/api/areas?q=` | Автокомплит городов |
 | GET | `/api/roles?q=` | Автокомплит сфер |
+
+> FastAPI автоматически генерирует интерактивную документацию API: Swagger UI доступен по адресу `/docs`, ReDoc — по `/redoc`.
 
 ## CLI-режим (без веб-интерфейса)
 

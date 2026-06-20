@@ -93,6 +93,7 @@ class Subscription(BaseModel):
 
 class Favorite(BaseModel):
     id: Optional[int] = None
+    chat_id: int = 0
     vacancy_id: str
     title: str
     company: str

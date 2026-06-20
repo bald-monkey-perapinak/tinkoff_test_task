@@ -148,10 +148,6 @@ export async function searchAreas(q: string): Promise<{ areas: Area[] }> {
   return request(`/api/areas?q=${encodeURIComponent(q)}`);
 }
 
-export async function searchRoles(q: string): Promise<{ roles: Area[] }> {
-  return request(`/api/roles?q=${encodeURIComponent(q)}`);
-}
-
 export async function exportVacancies(format: 'json' | 'csv'): Promise<Blob> {
   const resp = await fetch(`${BASE}/api/export?format=${format}`, {
     headers: getAuthHeaders(),

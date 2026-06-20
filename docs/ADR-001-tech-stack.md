@@ -59,7 +59,7 @@ Telegram Mini App для AI-поиска вакансий. Нужно: backend A
 | In-memory session store → SQLite | Простота → Persistence | Нужна миграция |
 | Groq бесплатный tier | Бесплатно | Rate limits, возможны простои |
 | FastAPI | Скорость разработки | Меньше экосистема, чем Django |
-| React | @twa-dev/sdk支持 | Больше boilerplate, чем Vue |
+| React | @twa-dev/sdk поддерживает | Больше boilerplate, чем Vue |
 
 ## Follow-up Decisions
 - [ ] Миграция на PostgreSQL при >100 concurrent users

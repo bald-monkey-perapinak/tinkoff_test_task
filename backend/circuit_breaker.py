@@ -1,5 +1,6 @@
 import time
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -12,28 +13,32 @@ class CircuitBreaker:
         self.fail_count = 0
         self.state = "closed"
         self.opened_at = 0.0
+        self._lock = asyncio.Lock()
 
-    def call_allowed(self) -> bool:
-        if self.state == "open":
-            if time.time() - self.opened_at > self.recovery_timeout:
-                self.state = "half_open"
-                logger.info(f"Circuit breaker '{self.name}' half_open, testing")
-                return True
-            return False
-        return True
+    async def call_allowed(self) -> bool:
+        async with self._lock:
+            if self.state == "open":
+                if time.time() - self.opened_at > self.recovery_timeout:
+                    self.state = "half_open"
+                    logger.info(f"Circuit breaker '{self.name}' half_open, testing")
+                    return True
+                return False
+            return True
 
-    def record_success(self):
-        if self.state == "half_open":
-            logger.info(f"Circuit breaker '{self.name}' recovered, closing")
-        self.fail_count = 0
-        self.state = "closed"
+    async def record_success(self):
+        async with self._lock:
+            if self.state == "half_open":
+                logger.info(f"Circuit breaker '{self.name}' recovered, closing")
+            self.fail_count = 0
+            self.state = "closed"
 
-    def record_failure(self):
-        self.fail_count += 1
-        if self.fail_count >= self.fail_threshold:
-            self.state = "open"
-            self.opened_at = time.time()
-            logger.warning(f"Circuit breaker '{self.name}' opened after {self.fail_count} failures")
+    async def record_failure(self):
+        async with self._lock:
+            self.fail_count += 1
+            if self.fail_count >= self.fail_threshold:
+                self.state = "open"
+                self.opened_at = time.time()
+                logger.warning(f"Circuit breaker '{self.name}' opened after {self.fail_count} failures")
 
     def get_state(self) -> dict:
         return {

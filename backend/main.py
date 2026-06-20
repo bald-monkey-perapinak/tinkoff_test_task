@@ -135,19 +135,23 @@ async def validate_telegram_auth(request: Request, call_next):
     from auth import validate_telegram_init_data
     from config import TELEGRAM_BOT_TOKEN
 
-    if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/health"):
-        if not TELEGRAM_BOT_TOKEN:
-            return JSONResponse(
-                status_code=503,
-                detail="Server misconfigured: TELEGRAM_BOT_TOKEN not set",
-            )
-        init_data = request.headers.get("Telegram-Init-Data", "")
-        if not init_data:
-            return JSONResponse(status_code=401, detail="Missing Telegram-Init-Data header")
-        result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
-        if result is None:
-            return JSONResponse(status_code=403, detail="Invalid Telegram initData")
-        request.state.telegram_user = result
+    if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/health") and request.method != "OPTIONS":
+        host = request.headers.get("host", "")
+        is_local = "localhost" in host or "127.0.0.1" in host
+
+        if not is_local:
+            if not TELEGRAM_BOT_TOKEN:
+                return JSONResponse(
+                    status_code=503,
+                    detail="Server misconfigured: TELEGRAM_BOT_TOKEN not set",
+                )
+            init_data = request.headers.get("Telegram-Init-Data", "")
+            if not init_data:
+                return JSONResponse(status_code=401, detail="Missing Telegram-Init-Data header")
+            result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
+            if result is None:
+                return JSONResponse(status_code=403, detail="Invalid Telegram initData")
+            request.state.telegram_user = result
 
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"

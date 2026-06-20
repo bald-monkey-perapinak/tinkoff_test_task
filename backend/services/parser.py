@@ -2,21 +2,41 @@ import csv
 import io
 import json
 import logging
-import re
 
 from models import Vacancy
+from services.security import has_minimum_vacancy_identity, sanitize_text, sanitize_url
 
 logger = logging.getLogger(__name__)
 
 MAX_FIELD_LEN = 1000
 MAX_CSV_COLUMNS = 50
+MAX_CSV_ROWS = 1000
+MAX_JSON_ITEMS = 1000
+MAX_JSON_DEPTH = 10
 
 
 def _truncate(text: str) -> str:
-    if not text:
-        return ""
-    clean = re.sub(r'[^\w\s,.\-а-яА-ЯёЁa-zA-Z0-9;/:₽€$¥£@#%&*()+=<>{}[\]|\\!?]', '', text)
-    return clean[:MAX_FIELD_LEN]
+    return sanitize_text(text, MAX_FIELD_LEN)
+
+
+def _safe_salary(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        amount = int(value)
+        if 0 <= amount <= 10_000_000:
+            return amount
+    return None
+
+
+def _json_depth(value, depth: int = 0) -> int:
+    if depth > MAX_JSON_DEPTH:
+        return depth
+    if isinstance(value, dict):
+        return max([depth, *(_json_depth(v, depth + 1) for v in value.values())])
+    if isinstance(value, list):
+        return max([depth, *(_json_depth(v, depth + 1) for v in value)])
+    return depth
 
 
 def _csv_safe(value: str) -> str:
@@ -39,6 +59,12 @@ def parse_vacancies_json(content: str) -> list[Vacancy]:
         data = json.loads(content)
         if not isinstance(data, list):
             data = [data]
+        if len(data) > MAX_JSON_ITEMS:
+            logger.warning(f"JSON has {len(data)} items (max {MAX_JSON_ITEMS}), truncating")
+            data = data[:MAX_JSON_ITEMS]
+        if _json_depth(data) > MAX_JSON_DEPTH:
+            logger.warning(f"JSON nesting exceeds max depth {MAX_JSON_DEPTH}, rejecting")
+            return []
         vacancies = []
         for item in data:
             try:
@@ -49,18 +75,24 @@ def parse_vacancies_json(content: str) -> list[Vacancy]:
                     skills = [_truncate(s) for s in skills_raw[:20] if isinstance(s, str)]
                 else:
                     skills = []
+                vacancy_id = _truncate(str(item.get("id", item.get("url", ""))))
+                title = _truncate(item.get("title", item.get("name", "")))
+                url = sanitize_url(item.get("url", ""))
+                if not has_minimum_vacancy_identity(vacancy_id, title, url):
+                    logger.warning("Skipping vacancy without id/title/url")
+                    continue
                 vacancies.append(Vacancy(
-                    id=_truncate(str(item.get("id", item.get("url", "")))),
-                    title=_truncate(item.get("title", item.get("name", ""))),
+                    id=vacancy_id,
+                    title=title,
                     company=_truncate(item.get("company", item.get("employer", ""))),
                     city=_truncate(item.get("city", item.get("area", ""))),
                     salary=_truncate(item.get("salary", "")),
-                    salary_from=item.get("salary_from") if isinstance(item.get("salary_from"), (int, float)) else None,
-                    salary_to=item.get("salary_to") if isinstance(item.get("salary_to"), (int, float)) else None,
+                    salary_from=_safe_salary(item.get("salary_from")),
+                    salary_to=_safe_salary(item.get("salary_to")),
                     schedule=_truncate(item.get("schedule", item.get("format", ""))),
                     experience=_truncate(item.get("experience", "")),
                     skills=skills,
-                    url=_truncate(item.get("url", "")),
+                    url=url,
                     description=_truncate(item.get("description", "")),
                     published_at=_truncate(item.get("published_at", "")),
                     is_mock=True,
@@ -86,7 +118,10 @@ def parse_vacancies_csv(content: str) -> list[Vacancy]:
             logger.warning(f"CSV has {len(reader.fieldnames)} columns (max {MAX_CSV_COLUMNS}), rejecting")
             return []
         vacancies = []
-        for row in reader:
+        for row_number, row in enumerate(reader, start=1):
+            if row_number > MAX_CSV_ROWS:
+                logger.warning(f"CSV has more than {MAX_CSV_ROWS} rows, truncating")
+                break
             try:
                 skills_raw = row.get("skills", row.get("key_skills", ""))
                 if isinstance(skills_raw, str):
@@ -105,9 +140,15 @@ def parse_vacancies_csv(content: str) -> list[Vacancy]:
                 except (ValueError, TypeError):
                     salary_to = None
 
+                vacancy_id = _truncate(str(row.get("id", row.get("url", ""))))
+                title = _csv_safe(_truncate(row.get("title", row.get("name", ""))))
+                url = sanitize_url(row.get("url", ""))
+                if not has_minimum_vacancy_identity(vacancy_id, title, url):
+                    logger.warning("Skipping CSV row without id/title/url")
+                    continue
                 vacancies.append(Vacancy(
-                    id=_truncate(str(row.get("id", row.get("url", "")))),
-                    title=_csv_safe(_truncate(row.get("title", row.get("name", "")))),
+                    id=vacancy_id,
+                    title=title,
                     company=_csv_safe(_truncate(row.get("company", row.get("employer", "")))),
                     city=_truncate(row.get("city", row.get("area", ""))),
                     salary=_truncate(row.get("salary", "")),
@@ -116,7 +157,7 @@ def parse_vacancies_csv(content: str) -> list[Vacancy]:
                     schedule=_truncate(row.get("schedule", row.get("format", ""))),
                     experience=_truncate(row.get("experience", "")),
                     skills=skills,
-                    url=_truncate(row.get("url", "")),
+                    url=url,
                     description=_truncate(row.get("description", "")),
                     published_at=_truncate(row.get("published_at", "")),
                     is_mock=True,

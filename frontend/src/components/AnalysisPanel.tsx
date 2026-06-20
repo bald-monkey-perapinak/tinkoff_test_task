@@ -1,7 +1,8 @@
-import { AnalysisResult } from '../types';
+import { AgentMetadata, AnalysisResult } from '../types';
 
 interface Props {
   results: AnalysisResult[];
+  metadata?: AgentMetadata | null;
   onOpenUrl?: (url: string) => void;
   loading?: boolean;
 }
@@ -89,7 +90,7 @@ function SkeletonCard() {
   );
 }
 
-export function AnalysisPanel({ results, onOpenUrl, loading }: Props) {
+export function AnalysisPanel({ results, metadata, onOpenUrl, loading }: Props) {
   if (loading) {
     return <div>{[1,2,3].map(i => <SkeletonCard key={i}/>)}</div>;
   }
@@ -117,6 +118,19 @@ export function AnalysisPanel({ results, onOpenUrl, loading }: Props) {
       <div className="count-badge" style={{ marginBottom: 12 }}>
         <strong>Топ-{results.length}</strong> по версии AI
       </div>
+      {metadata && (
+        <div className="agent-meta">
+          <div className="agent-meta-title">{metadata.plan_goal || 'Агентный анализ вакансий'}</div>
+          <div className="agent-meta-row">
+            <span>{metadata.analysis_type}</span>
+            <span>{metadata.iterations_used} ит.</span>
+            <span>{metadata.total_vacancies_pool} в пуле</span>
+            <span>{metadata.total_searches ?? 0} поисков</span>
+            <span>{metadata.reflections_count ?? 0} рефлексий</span>
+          </div>
+          {metadata.overall_summary && <div className="agent-meta-summary">{metadata.overall_summary}</div>}
+        </div>
+      )}
 
       {results.map((r, i) => {
         const v = r.vacancy;

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import WebApp from '@twa-dev/sdk';
-import { Vacancy, AnalysisResult, Criteria, Favorite, Area } from './types';
+import { Vacancy, AnalysisResult, Criteria, Favorite, Area, AgentMetadata } from './types';
 import {
   searchVacancies, uploadFile, analyzeVacancies,
   getFavorites, addFavorite, removeFavorite,
@@ -101,6 +101,7 @@ export default function App() {
   const [total,      setTotal]      = useState(0);
   const [results,    setResults]    = useState<AnalysisResult[]>([]);
   const [report,     setReport]     = useState('');
+  const [agentMetadata, setAgentMetadata] = useState<AgentMetadata | null>(null);
   const [favorites,  setFavorites]  = useState<Set<string>>(new Set());
   const [favList,    setFavList]    = useState<Favorite[]>([]);
   const [areaSugs,   setAreaSugs]   = useState<Area[]>([]);
@@ -161,6 +162,7 @@ export default function App() {
     setSearching(true);
     setResults([]);
     setReport('');
+    setAgentMetadata(null);
     setPage(0);
     try {
       const data = await searchVacancies({
@@ -215,6 +217,17 @@ export default function App() {
       const data = await analyzeVacancies(criteria);
       setResults(data.results);
       setReport(data.report);
+      setAgentMetadata({
+        analysis_type: data.analysis_type,
+        iterations_used: data.iterations_used,
+        total_vacancies_pool: data.total_vacancies_pool,
+        overall_summary: data.overall_summary,
+        plan_goal: data.plan_goal,
+        plan_steps_count: data.plan_steps_count,
+        reflections_count: data.reflections_count,
+        total_searches: data.total_searches,
+        total_new_vacancies: data.total_new_vacancies,
+      });
       try { WebApp.HapticFeedback.notificationOccurred('success'); } catch {}
     } catch (err) {
       showError(`Ошибка AI-анализа: ${err instanceof Error ? err.message : ''}`);
@@ -490,6 +503,7 @@ export default function App() {
 
             <AnalysisPanel
               results={results}
+              metadata={agentMetadata}
               onOpenUrl={openUrl}
               loading={analyzing}
             />

@@ -4,6 +4,7 @@ from services.tools import (
     ExpandSearchTool,
     FilterResultsTool,
     GenerateReportTool,
+    ScoreVacanciesTool,
     ToolRegistry,
 )
 
@@ -33,6 +34,7 @@ class TestToolRegistry:
         names = registry.get_tool_names()
         assert "search_vacancies" in names
         assert "filter_results" in names
+        assert "score_vacancies" in names
         assert "generate_report" in names
         assert "expand_search" in names
 
@@ -50,7 +52,7 @@ class TestToolRegistry:
     def test_get_all_schemas(self):
         registry = ToolRegistry()
         schemas = registry.get_all_schemas()
-        assert len(schemas) == 4
+        assert len(schemas) == 5
         assert all("function" in s for s in schemas)
 
     def test_get_descriptions(self):
@@ -109,6 +111,19 @@ class TestGenerateReportTool:
         )
         assert result.success is True
         assert "Отчёт по анализу" in result.data["report"]
+
+
+class TestScoreVacanciesTool:
+    @pytest.mark.asyncio
+    async def test_score_vacancies(self):
+        tool = ScoreVacanciesTool()
+        result = await tool.execute(
+            vacancies=[_make_vacancy()],
+            criteria=CriteriaInput(direction="Python", remote_only=True),
+        )
+        assert result.success is True
+        assert result.data["count"] == 1
+        assert result.data["results"][0].vacancy_id == "123"
 
 
 class TestExpandSearchTool:

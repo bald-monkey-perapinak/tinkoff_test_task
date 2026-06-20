@@ -26,6 +26,23 @@ export interface AnalysisResult {
   vacancy?: Vacancy;
 }
 
+export interface AgentMetadata {
+  analysis_type: string;
+  iterations_used: number;
+  total_vacancies_pool: number;
+  overall_summary?: string;
+  plan_goal?: string;
+  plan_steps_count?: number;
+  reflections_count?: number;
+  total_searches?: number;
+  total_new_vacancies?: number;
+}
+
+export interface AnalysisResponse extends AgentMetadata {
+  results: AnalysisResult[];
+  report: string;
+}
+
 export interface Criteria {
   direction: string;
   city: string;

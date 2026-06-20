@@ -333,6 +333,12 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
             "analysis_type": metadata.analysis_type,
             "iterations_used": metadata.iterations_used,
             "total_vacancies_pool": metadata.total_vacancies_pool,
+            "overall_summary": metadata.overall_summary,
+            "plan_goal": metadata.plan_goal,
+            "plan_steps_count": metadata.plan_steps_count,
+            "reflections_count": metadata.reflections_count,
+            "total_searches": metadata.total_searches,
+            "total_new_vacancies": metadata.total_new_vacancies,
         }
     except HTTPException:
         raise

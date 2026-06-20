@@ -7,7 +7,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models import CriteriaInput, Vacancy
-from services.agent import AgentState, _build_execution_prompt
+from services.agent import AgentState, VacancyAgent, _build_execution_prompt, _build_fallback_plan
 from services.analyzer import (
     _parse_finalize_results,
     _rule_based_analyze,
@@ -153,6 +153,13 @@ class TestBuildAgentPrompt:
         prompt = _build_execution_prompt([sample_vacancy], sample_criteria, 2, state)
         assert "3/5" in prompt
 
+    def test_fallback_plan_from_criteria(self, sample_criteria):
+        plan = _build_fallback_plan(sample_criteria)
+        assert plan.goal
+        assert len(plan.steps) == 3
+        assert plan.steps[0].params["query"] == "Python"
+        assert plan.steps[0].params["schedule"] == "remote"
+
 
 class TestRuleBasedAnalyze:
     def test_returns_top_5(self, sample_criteria):
@@ -173,6 +180,18 @@ class TestRuleBasedAnalyze:
     def test_score_range(self, sample_vacancy, sample_criteria):
         results = _rule_based_analyze([sample_vacancy], sample_criteria)
         assert 1 <= results[0].fit_score <= 10
+
+
+@pytest.mark.asyncio
+class TestVacancyAgent:
+    async def test_hybrid_path_returns_valid_rank_and_metadata(self, sample_vacancy, sample_criteria):
+        agent = VacancyAgent()
+        results, metadata = await agent._run_hybrid([sample_vacancy], sample_criteria, save_memory=False)
+
+        assert len(results) == 1
+        assert results[0].rank == 1
+        assert metadata["analysis_type"] == "rule_based_hybrid"
+        assert metadata["plan_steps_count"] == 1
 
 
 @pytest.mark.asyncio

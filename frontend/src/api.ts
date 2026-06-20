@@ -1,5 +1,5 @@
 import WebApp from '@twa-dev/sdk';
-import { Vacancy, AnalysisResult, Criteria, Favorite, Subscription, SearchResult, Area } from './types';
+import { Vacancy, Criteria, Favorite, Subscription, SearchResult, Area, AnalysisResponse } from './types';
 
 const BASE = import.meta.env.VITE_API_URL || '';
 const DEFAULT_TIMEOUT = 15000;
@@ -113,7 +113,7 @@ export async function uploadFile(file: File): Promise<{ loaded: number; session_
   }
 }
 
-export async function analyzeVacancies(criteria: Criteria): Promise<{ results: AnalysisResult[]; report: string }> {
+export async function analyzeVacancies(criteria: Criteria): Promise<AnalysisResponse> {
   return request('/api/analyze', {
     method: 'POST',
     body: JSON.stringify(criteria),

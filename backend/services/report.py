@@ -1,19 +1,26 @@
 from datetime import datetime
 
 from models import AnalysisResult, Vacancy
+from services.security import sanitize_text, sanitize_url
 
 
 def _escape_md(text: str) -> str:
     if not text:
         return ""
+    text = sanitize_text(text)
     for ch in ("\\", "*", "_", "~", "#", "[", "]", "|", "`"):
         text = text.replace(ch, "\\" + ch)
     return text
 
 
+def _escape_md_block(text: str) -> str:
+    return "\n".join(_escape_md(line) for line in text.splitlines())
+
+
 def _escape_table_cell(text: str) -> str:
     if not text:
         return ""
+    text = sanitize_text(text)
     return text.replace("|", "\\|")
 
 
@@ -46,7 +53,7 @@ def generate_report(
     overall_summary: str = "",
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    analysis_label = ANALYSIS_TYPE_LABELS.get(analysis_type, f"Неизвестный тип: {analysis_type}")
+    analysis_label = ANALYSIS_TYPE_LABELS.get(analysis_type, f"Неизвестный тип: {sanitize_text(analysis_type, 80)}")
     lines = [
         "# Отчёт по анализу вакансий",
         "",
@@ -63,7 +70,7 @@ def generate_report(
 
     if criteria_text:
         lines.append("## Критерии поиска")
-        lines.append(criteria_text)
+        lines.append(_escape_md_block(criteria_text))
         lines.append("")
 
     lines.append("## Результаты")
@@ -90,7 +97,7 @@ def generate_report(
         v = next((x for x in vacancies if x.id == r.vacancy_id), None)
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(r.rank, f"#{r.rank}")
 
-        lines.append(f"### {medal} {r.summary}")
+        lines.append(f"### {medal} {_escape_md(r.summary)}")
         lines.append("")
         lines.append("| Параметр | Значение |")
         lines.append("|----------|----------|")
@@ -106,13 +113,14 @@ def generate_report(
         lines.append(f"**Что смущает:** {_escape_md(r.concerns)}")
         if r.recommendation:
             lines.append("")
-            lines.append(f"**Рекомендация:** {r.recommendation}")
+            lines.append(f"**Рекомендация:** {_escape_md(r.recommendation)}")
         if v and v.skills:
             lines.append("")
-            lines.append(f"**Навыки:** {', '.join(v.skills)}")
-        if v and v.url:
+            lines.append(f"**Навыки:** {_escape_md(', '.join(v.skills))}")
+        safe_url = sanitize_url(v.url) if v else ""
+        if safe_url:
             lines.append("")
-            lines.append(f"🔗 [Ссылка]({v.url})")
+            lines.append(f"🔗 [Ссылка]({safe_url})")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -120,7 +128,7 @@ def generate_report(
     if overall_summary:
         lines.append("## Резюме поиска")
         lines.append("")
-        lines.append(overall_summary)
+        lines.append(_escape_md(overall_summary))
         lines.append("")
 
     lines.append(f"*Отчёт сгенерирован автоматически {now}*")

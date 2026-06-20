@@ -34,6 +34,7 @@ from services.analyzer import (
     _sanitize,
     _sanitize_vacancy_field,
 )
+from services.security import sanitize_text
 from services.tracing import AgentTracer
 
 logger = logging.getLogger(__name__)
@@ -345,13 +346,15 @@ async def _load_memory_context(user_key: str, criteria: CriteriaInput) -> str:
     criteria_hash = _build_criteria_hash(criteria)
     similar = await get_similar_memory_by_criteria(user_key, criteria_hash)
     if similar:
-        return f"\nПРОШЛЫЙ ОПЫТ: Ранее уже искали по таким же критериям. Результат: {similar.results_summary}. Рефлексия: {similar.reflection}. Не повторяй те же ошибки."
+        summary = sanitize_text(similar.results_summary, 500)
+        reflection = sanitize_text(similar.reflection, 500)
+        return f"\nПРОШЛЫЙ ОПЫТ: Ранее уже искали по таким же критериям. Результат: {summary}. Рефлексия: {reflection}. Не повторяй те же ошибки."
 
     history = await get_agent_memory(user_key, limit=3)
     if history:
         entries = []
         for h in history:
-            entries.append(f"- {h.results_summary} (score: {h.top_score}/10)")
+            entries.append(f"- {sanitize_text(h.results_summary, 300)} (score: {h.top_score}/10)")
         return "\nИСТОРИЯ ПОИСКА:\n" + "\n".join(entries) + "\nУчитывай прошлый опыт: что сработало, а что нет."
 
     return ""
@@ -362,18 +365,57 @@ async def _save_to_memory(user_key: str, criteria: CriteriaInput, results: list[
     top_score = max((r.fit_score for r in results), default=0)
     summary_parts = []
     for r in results[:3]:
-        summary_parts.append(f"{r.summary} ({r.fit_score}/10)")
+        summary_parts.append(f"{sanitize_text(r.summary, 200)} ({r.fit_score}/10)")
     results_summary = "; ".join(summary_parts) if summary_parts else "нет результатов"
 
     entry = AgentMemoryEntry(
         user_key=user_key,
         criteria_hash=criteria_hash,
-        results_summary=results_summary,
+        results_summary=sanitize_text(results_summary, 1000),
         top_score=top_score,
-        reflection=reflection,
+        reflection=sanitize_text(reflection, 1000),
         created_at=datetime.now().timestamp(),
     )
     await save_agent_memory(entry)
+
+
+def _build_fallback_plan(criteria: CriteriaInput) -> AgentPlan:
+    query = criteria.direction or "стажировка junior"
+    params: dict = {"query": query}
+    if criteria.city:
+        params["area"] = criteria.city
+    if criteria.remote_only:
+        params["schedule"] = "remote"
+    if criteria.min_salary:
+        params["salary_from"] = criteria.min_salary
+    if criteria.experience_level:
+        params["experience"] = criteria.experience_level
+
+    steps = [
+        AgentPlanStep(
+            step_id=1,
+            action="search",
+            params=params,
+            reason="Базовый поиск по критериям пользователя",
+        ),
+        AgentPlanStep(
+            step_id=2,
+            action="reflect",
+            params={},
+            reason="Оценить качество найденного пула и решить, нужно ли расширять поиск",
+        ),
+        AgentPlanStep(
+            step_id=3,
+            action="finalize",
+            params={},
+            reason="Выбрать топ-5 вакансий и подготовить рекомендации",
+        ),
+    ]
+    return AgentPlan(
+        goal=f"Найти лучшие вакансии по направлению: {query}",
+        steps=steps,
+        fallback_strategy="Если LLM-план недоступен, использовать критерии пользователя и rule-based scoring.",
+    )
 
 
 class VacancyAgent:
@@ -403,6 +445,7 @@ class VacancyAgent:
         vacancies: list[Vacancy],
         criteria: CriteriaInput,
         user_key: str = "anonymous",
+        save_memory: bool = True,
     ) -> tuple[list[AnalysisResult], dict]:
         from services.scorer import ScoreCalculator
 
@@ -414,27 +457,34 @@ class VacancyAgent:
         for sr in top:
             vacancy = next((v for v in vacancies if v.id == sr.vacancy_id), None)
             if vacancy:
+                score = max(1, min(10, int(round(sr.score))))
                 results.append(AnalysisResult(
                     vacancy_id=sr.vacancy_id,
-                    rank=0,
-                    fit_score=sr.score,
+                    rank=1,
+                    fit_score=score,
                     why_fits="; ".join(sr.reasons),
                     concerns="; ".join(sr.concerns) if sr.concerns else "серьёзных замечаний нет",
                     summary=f"{vacancy.title} в {vacancy.company}",
-                    recommendation=self._generate_recommendation(sr.score),
+                    recommendation=self._generate_recommendation(score),
                 ))
 
         results.sort(key=lambda r: r.fit_score, reverse=True)
         for i, r in enumerate(results):
             r.rank = i + 1
 
-        await _save_to_memory(user_key, criteria, results, "rule_based analysis")
+        if save_memory:
+            await _save_to_memory(user_key, criteria, results, "rule_based analysis")
 
         return results, {
             "analysis_type": "rule_based_hybrid",
             "iterations_used": 1,
             "total_vacancies_pool": len(vacancies),
             "overall_summary": f"Анализ по правилам: {len(results)} вакансий из {len(vacancies)}",
+            "plan_goal": "Rule-based fallback",
+            "plan_steps_count": 1,
+            "reflections_count": 0,
+            "total_searches": 0,
+            "total_new_vacancies": 0,
         }
 
     async def _run_llm_only(
@@ -454,6 +504,16 @@ class VacancyAgent:
 
         memory_context = await _load_memory_context(user_key, criteria)
         self.state.memory_context = memory_context
+        self.state.plan = await self._plan(criteria, memory_context)
+        if not self.state.plan:
+            self.state.plan = _build_fallback_plan(criteria)
+
+        if self.tracer and self.state.plan:
+            self.tracer.add_step(
+                "planning",
+                "completed",
+                decision=f"goal={self.state.plan.goal}; steps={len(self.state.plan.steps)}",
+            )
 
         # ── Фаза 1: планирование ────────────────────────────────────────────
         plan = await self._plan(criteria, memory_context)
@@ -477,6 +537,23 @@ class VacancyAgent:
         # ── Фаза 2: исполнение ───────────────────────────────────────────────
         from services.hh_client import search_vacancies
         results, metadata = await self._execute(criteria, search_vacancies)
+
+        if not results:
+            logger.warning("[Agent] LLM execution produced no final result, using current pool rule-based finalization")
+            results, fallback_metadata = await self._run_hybrid(
+                self.state.all_vacancies,
+                criteria,
+                user_key,
+                save_memory=False,
+            )
+            metadata = {
+                **fallback_metadata,
+                "analysis_type": "rule_based_agent_fallback",
+                "overall_summary": (
+                    f"LLM не завершил агентный цикл; выполнен fallback по текущему пулу "
+                    f"из {len(self.state.all_vacancies)} вакансий."
+                ),
+            }
 
         overall_reflection = ""
         if self.state.reflections:
@@ -502,6 +579,9 @@ class VacancyAgent:
             "overall_summary": metadata.get("overall_summary", ""),
             "reflections_count": len(self.state.reflections),
             "total_searches": self.state.total_searches,
+            "total_new_vacancies": self.state.total_new_vacancies,
+            "plan_goal": self.state.plan.goal if self.state.plan else "",
+            "plan_steps_count": len(self.state.plan.steps) if self.state.plan else 0,
         }
 
     def _advance_plan_step(self, action_taken: str):

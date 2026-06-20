@@ -4,11 +4,12 @@ import logging
 import pathlib
 import sys
 
-from config import ANALYSIS_MAX_VACANCIES
+from config import ANALYSIS_MAX_VACANCIES, MAX_UPLOAD_SIZE
 from models import CriteriaInput
 from services.analyzer import analyze_with_llm
 from services.parser import parse_uploaded_file
 from services.report import generate_report
+from services.security import sanitize_criteria, sanitize_text
 
 CRITERIA_FIELDS = {
     "направление": "direction",
@@ -49,10 +50,10 @@ def parse_criteria_file(path: str) -> CriteriaInput:
             except ValueError:
                 _logger.warning(f"Non-numeric min_salary value: {value}")
         elif field == "key_skills":
-            data[field] = [s.strip() for s in value.split(",") if s.strip()]
+            data[field] = [sanitize_text(s.strip(), 50) for s in value.split(",") if sanitize_text(s.strip(), 50)]
         else:
-            data[field] = value
-    return CriteriaInput(**data)
+            data[field] = sanitize_text(value, 200)
+    return sanitize_criteria(CriteriaInput(**data))
 
 
 def interactive_criteria() -> CriteriaInput:
@@ -77,7 +78,7 @@ def interactive_criteria() -> CriteriaInput:
     key_skills = [s.strip() for s in skills_raw.split(",") if s.strip()] if skills_raw else []
     date_from = input("  Дата публикации от (YYYY-MM-DD): ").strip() or None
 
-    return CriteriaInput(
+    return sanitize_criteria(CriteriaInput(
         direction=direction,
         city=city,
         remote_only=remote_only,
@@ -85,7 +86,7 @@ def interactive_criteria() -> CriteriaInput:
         experience_level=experience_level,
         key_skills=key_skills,
         date_from=date_from,
-    )
+    ))
 
 
 def build_criteria_text(criteria: CriteriaInput) -> str:
@@ -105,7 +106,10 @@ async def run_pipeline(file_path: str, criteria: CriteriaInput, output_path: str
 
     logger.info(f"[1/3] Чтение вакансий из {file_path}")
     try:
-        raw = pathlib.Path(file_path).read_bytes()
+        input_path = pathlib.Path(file_path)
+        if input_path.stat().st_size > MAX_UPLOAD_SIZE:
+            raise ValueError(f"Файл слишком большой: максимум {MAX_UPLOAD_SIZE // 1024 // 1024}MB")
+        raw = input_path.read_bytes()
     except OSError as e:
         logger.error(f"Не удалось прочитать файл {file_path}: {e}")
         report = generate_report([], [], criteria_text=build_criteria_text(criteria), overall_summary=f"Ошибка чтения файла: {e}")

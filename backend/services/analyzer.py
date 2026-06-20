@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from circuit_breaker import groq_breaker
-from config import ANALYSIS_MAX_VACANCIES, AGENT_TIMEOUT_SECONDS, GROQ_API_KEY, PROMPT_INPUT_MAX_LEN
+from config import AGENT_TIMEOUT_SECONDS, ANALYSIS_MAX_VACANCIES, GROQ_API_KEY, PROMPT_INPUT_MAX_LEN
 from database import get_analysis_cache, set_analysis_cache
 from models import AnalysisResult, CriteriaInput, Vacancy
+from services.security import sanitize_criteria, sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,11 @@ class AnalysisMetadata:
     iterations_used: int = 1
     total_vacancies_pool: int = 0
     overall_summary: str = ""
+    plan_goal: str = ""
+    plan_steps_count: int = 0
+    reflections_count: int = 0
+    total_searches: int = 0
+    total_new_vacancies: int = 0
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -37,14 +43,8 @@ def _sanitize(text: str) -> str:
 
 
 def _sanitize_vacancy_field(text: str, max_len: int) -> str:
-    if not text:
-        return ""
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    text = re.sub(r'(?i)(ignore (all )?(previous|above) instructions?|system prompt|you are now|new instructions?|forget (everything|all))', '[removed]', text)
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'\n+', ' ', text)
-    clean = re.sub(r'[^\w\s,.\-а-яА-ЯёЁa-zA-Z0-9;/:₽€$¥£()!?@#%&*+=]', '', text)
-    return clean[:max_len]
+    value = sanitize_text(text, max_len)
+    return re.sub(r"[|\\`]", "", value)[:max_len]
 
 
 def _rule_based_analyze(vacancies: list[Vacancy], criteria: CriteriaInput) -> list[AnalysisResult]:
@@ -120,15 +120,19 @@ def _parse_finalize_results(args: dict, valid_vacancies: list[Vacancy]) -> list[
             why = str(item.get("why_fits", ""))[:500]
             why = re.sub(r'\[.*?\]\((javascript:|data:).*?\)', '[blocked]', why, flags=re.IGNORECASE)
             why = re.sub(r'<script.*?</script>', '', why, flags=re.IGNORECASE | re.DOTALL)
+            why = sanitize_text(why, 500)
             concerns = str(item.get("concerns", ""))[:500]
             concerns = re.sub(r'\[.*?\]\((javascript:|data:).*?\)', '[blocked]', concerns, flags=re.IGNORECASE)
             concerns = re.sub(r'<script.*?</script>', '', concerns, flags=re.IGNORECASE | re.DOTALL)
+            concerns = sanitize_text(concerns, 500)
             summary = str(item.get("summary", ""))[:200]
             summary = re.sub(r'\[.*?\]\((javascript:|data:).*?\)', '[blocked]', summary, flags=re.IGNORECASE)
             summary = re.sub(r'<script.*?</script>', '', summary, flags=re.IGNORECASE | re.DOTALL)
+            summary = sanitize_text(summary, 200)
             recommendation = str(item.get("recommendation", ""))[:500]
             recommendation = re.sub(r'\[.*?\]\((javascript:|data:).*?\)', '[blocked]', recommendation, flags=re.IGNORECASE)
             recommendation = re.sub(r'<script.*?</script>', '', recommendation, flags=re.IGNORECASE | re.DOTALL)
+            recommendation = sanitize_text(recommendation, 500)
             results.append(AnalysisResult(
                 vacancy_id=vid,
                 rank=int(item.get("rank", 1)),
@@ -155,6 +159,8 @@ def _parse_finalize_results(args: dict, valid_vacancies: list[Vacancy]) -> list[
 
 
 async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput, user_key: str = "anonymous") -> tuple[list[AnalysisResult], AnalysisMetadata]:
+    criteria = sanitize_criteria(criteria)
+
     if not GROQ_API_KEY:
         logger.info("No GROQ_API_KEY, using rule-based analysis")
         results = _rule_based_analyze(vacancies, criteria)
@@ -191,6 +197,11 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput, us
             iterations_used=metadata.get("iterations_used", 1),
             total_vacancies_pool=metadata.get("total_vacancies_pool", len(vacancies)),
             overall_summary=metadata.get("overall_summary", ""),
+            plan_goal=metadata.get("plan_goal", ""),
+            plan_steps_count=metadata.get("plan_steps_count", 0),
+            reflections_count=metadata.get("reflections_count", 0),
+            total_searches=metadata.get("total_searches", 0),
+            total_new_vacancies=metadata.get("total_new_vacancies", 0),
         )
 
     except asyncio.TimeoutError:

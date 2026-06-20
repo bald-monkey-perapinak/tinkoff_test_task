@@ -453,26 +453,6 @@ class VacancyAgent:
         memory_context = await _load_memory_context(user_key, criteria)
         self.state.memory_context = memory_context
 
-        plan = await self._plan(criteria, memory_context)
-        if plan is None or not plan.steps:
-            logger.warning("[Agent] Planning failed, falling back to rule-based")
-            if self.tracer:
-                self.tracer.add_step("planning", "failed", decision="fall_back_to_rule_based")
-                self.tracer.finish(None, int((time.time() - trace_start) * 1000))
-            return await self._run_hybrid(vacancies, criteria, user_key)
-
-        self.state.plan = plan
-        logger.info(f"[Agent] Plan created: {len(plan.steps)} steps. Goal: {plan.goal}")
-        for step in plan.steps:
-            logger.info(f"[Agent] Step {step.step_id}: {step.action} — {step.reason}")
-
-        if self.tracer:
-            self.tracer.add_step(
-                "planning", "completed",
-                decision=f"plan with {len(plan.steps)} steps",
-                reasoning=plan.goal,
-            )
-
         from services.hh_client import search_vacancies
         results, metadata = await self._execute(criteria, search_vacancies)
 
@@ -493,8 +473,6 @@ class VacancyAgent:
             "iterations_used": self.state.iterations_used,
             "total_vacancies_pool": len(self.state.all_vacancies),
             "overall_summary": metadata.get("overall_summary", ""),
-            "plan_goal": plan.goal if plan else "",
-            "plan_steps": len(plan.steps) if plan else 0,
             "reflections_count": len(self.state.reflections),
             "total_searches": self.state.total_searches,
         }
@@ -546,9 +524,10 @@ class VacancyAgent:
         return None
 
     async def _execute(self, criteria: CriteriaInput, search_fn) -> tuple[list[AnalysisResult], dict]:
+        from config import AGENT_MAX_ITERATIONS
         from services.hh_client import search_vacancies as hh_search
 
-        max_iterations = 5
+        max_iterations = AGENT_MAX_ITERATIONS
         consecutive_failures = 0
 
         for iteration in range(max_iterations):
@@ -648,18 +627,6 @@ class VacancyAgent:
                     overall_summary = str(args.get("overall_summary", ""))[:500]
                     logger.info(f"[Agent] Finalized: {len(results)} results after {self.state.iterations_used} iterations, pool: {len(self.state.all_vacancies)}")
                     return results, {"analysis_type": "llm", "overall_summary": overall_summary}
-
-            searches_since_reflection = self.state.total_searches - self.state.last_reflection_at
-            if searches_since_reflection >= 2 and not any(
-                tc.function.name == "reflect_and_adjust" for tc in (response.tool_calls or [])
-            ):
-                logger.info(f"[Agent] Forced reflection gate: {searches_since_reflection} searches since last reflection")
-                messages.append({
-                    "role": "user",
-                    "content": "Прошло 2+ поиска без оценки. Вызови reflect_and_adjust перед продолжением."
-                })
-                self.state.messages = messages
-                continue
 
             if self.state.plan and self.state.current_step < len(self.state.plan.steps) - 1:
                 self.state.current_step += 1

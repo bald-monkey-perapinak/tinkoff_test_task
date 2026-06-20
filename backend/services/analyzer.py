@@ -176,7 +176,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput, us
         agent = VacancyAgent()
         results, metadata = await asyncio.wait_for(
             agent.run(vacancies, criteria, user_key=user_key),
-            timeout=120.0,
+            timeout=30.0,
         )
 
         if not results:
@@ -194,7 +194,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput, us
         )
 
     except asyncio.TimeoutError:
-        logger.error("[Agent] Agent timed out after 120s")
+        logger.error("[Agent] Agent timed out after 30s")
         results = _rule_based_analyze(vacancies, criteria)
         return results, AnalysisMetadata(analysis_type="rule_based_timeout", total_vacancies_pool=len(vacancies))
     except Exception as e:

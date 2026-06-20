@@ -11,8 +11,8 @@ export function VacancyList({ vacancies, favorites, onToggleFavorite, onOpenUrl 
   if (!vacancies.length) {
     return (
       <div className="empty-state">
-        <div className="empty-icon">🔍</div>
-        <div>Нет вакансий для отображения</div>
+        <div className="empty-state-mark">—</div>
+        <div className="empty-state-text">Нет вакансий для отображения</div>
       </div>
     );
   }
@@ -27,33 +27,49 @@ export function VacancyList({ vacancies, favorites, onToggleFavorite, onOpenUrl 
 
   return (
     <div className="section">
-      {vacancies.map((v) => (
-        <div className="card" key={v.id}>
+      {vacancies.map((v, i) => (
+        <div className="card" key={v.id} style={{ animationDelay: `${Math.min(i, 8) * 0.03}s` }}>
           <div className="card-header">
             <div>
               <div className="card-title">{v.title}</div>
               <div className="card-company">{v.company}</div>
             </div>
             <button
-              className="star-btn"
+              className={`star-btn ${favorites.has(v.id) ? 'is-fav' : ''}`}
               onClick={() => onToggleFavorite(v)}
               title={favorites.has(v.id) ? 'Убрать из избранного' : 'В избранное'}
-              aria-label={favorites.has(v.id) ? 'Убрать из избранного' : 'В избранное'}
-              aria-pressed={favorites.has(v.id)}
             >
               {favorites.has(v.id) ? '★' : '☆'}
             </button>
           </div>
           <div className="card-meta">
-            {v.salary && <span className="badge salary">{v.salary}</span>}
-            {v.city && <span className="badge city">{v.city}</span>}
-            {v.schedule && <span className="badge remote">{v.schedule}</span>}
-            {v.experience && <span className="badge">{v.experience}</span>}
+            {v.salary && (
+              <span className="meta-item salary">
+                <span className="meta-value">{v.salary}</span>
+              </span>
+            )}
+            {v.city && (
+              <span className="meta-item">
+                <span className="meta-value">{v.city}</span>
+              </span>
+            )}
+            {v.experience && (
+              <span className="meta-item">
+                <span className="meta-value">{v.experience}</span>
+              </span>
+            )}
+            {v.schedule && (
+              <span className={`badge ${v.schedule.toLowerCase().includes('удал') ? 'remote' : ''}`}>
+                {v.schedule}
+              </span>
+            )}
           </div>
           {v.skills.length > 0 && (
             <div className="skills">
-              {v.skills.map((s, i) => (
-                <span className="skill" key={i}>{s}</span>
+              {v.skills.map((s, idx) => (
+                <span className="skill" key={idx}>
+                  {s}
+                </span>
               ))}
             </div>
           )}

@@ -75,21 +75,25 @@ export function SubscriptionsTab({ currentFilters }: Props) {
   }
 
   if (loading) {
-    return <div className="loading"><span className="spinner" /></div>;
+    return (
+      <div className="loading">
+        <span className="spinner" />
+      </div>
+    );
   }
 
   return (
     <div className="section">
-      {error && <div role="alert" className="error-banner" style={{ color: 'var(--danger, #e74c3c)', padding: 8, marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <div className="error-banner">{error}</div>}
 
-      <button className="btn btn-primary" onClick={handleCreate} style={{ width: '100%', marginBottom: 12 }}>
+      <button className="btn btn-primary" onClick={handleCreate} style={{ width: '100%', marginBottom: 14 }}>
         Создать подписку по текущим фильтрам
       </button>
 
       {subs.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-icon">🔔</div>
-          <div>Нет активных подписок</div>
+          <div className="empty-state-mark">○</div>
+          <div className="empty-state-text">Нет активных подписок — бот пришлёт сообщение, как только появятся новые вакансии</div>
         </div>
       ) : (
         subs.map((s) => (

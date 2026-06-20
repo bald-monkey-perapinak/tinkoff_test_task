@@ -5,26 +5,25 @@ interface Props {
   onOpenUrl?: (url: string) => void;
 }
 
-function getScoreColor(score: number): string {
-  if (score >= 8) return '#4caf50';
-  if (score >= 6) return '#ff9800';
-  if (score >= 4) return '#ff5722';
-  return '#f44336';
+function scoreClass(score: number): string {
+  if (score >= 8) return 'score-high';
+  if (score >= 5) return 'score-mid';
+  return 'score-low';
 }
 
-function getMedal(rank: number): string {
-  if (rank === 1) return '🥇';
-  if (rank === 2) return '🥈';
-  if (rank === 3) return '🥉';
-  return `#${rank}`;
+function getRankLabel(rank: number): string {
+  if (rank === 1) return 'Лучшее совпадение';
+  if (rank === 2) return '2-е место';
+  if (rank === 3) return '3-е место';
+  return `${rank}-е место`;
 }
 
 export function AnalysisPanel({ results, onOpenUrl }: Props) {
   if (!results.length) {
     return (
       <div className="empty-state">
-        <div className="empty-icon">🤖</div>
-        <div>Загрузите вакансии и нажмите «AI-анализ»</div>
+        <div className="empty-state-mark">AI</div>
+        <div className="empty-state-text">Загрузите вакансии и запустите анализ — здесь появится ранжированный список</div>
       </div>
     );
   }
@@ -40,45 +39,37 @@ export function AnalysisPanel({ results, onOpenUrl }: Props) {
   return (
     <div className="section">
       <div className="total-badge">Топ-{results.length} по версии AI</div>
-      {results.map((r) => {
+      {results.map((r, i) => {
         const v = r.vacancy;
-        const color = getScoreColor(r.fit_score);
         return (
-          <div className="card" key={r.vacancy_id}>
+          <div className="card" key={r.vacancy_id} style={{ animationDelay: `${Math.min(i, 8) * 0.04}s` }}>
             <div className="card-header">
-              <div className="card-title">
-                {getMedal(r.rank)} {r.summary}
+              <div>
+                <div className="card-title">{r.summary}</div>
+                {v && (
+                  <div className="card-company">
+                    {v.company} · {v.city || '—'}
+                  </div>
+                )}
               </div>
             </div>
-            {v && (
-              <div className="card-company">
-                {v.company} · {v.city} · {v.salary || 'зарплата не указана'}
-              </div>
-            )}
-            <div className="fit-bar">
-              <span className="fit-label">Соответствие</span>
-              <span className="fit-score" style={{ color }}>{r.fit_score}/10</span>
-              <div className="fit-bar-track">
-                <div
-                  className="fit-bar-fill"
-                  style={{ width: `${r.fit_score * 10}%`, background: color }}
-                />
+
+            <div className="stamp-row">
+              <div className={`stamp ${scoreClass(r.fit_score)}`}>{r.fit_score}/10</div>
+              <div>
+                <div className="stamp-rank">{getRankLabel(r.rank)}</div>
+                <div className="stamp-label">соответствие критериям</div>
               </div>
             </div>
+
             <div className="explanation">
               <div className="explanation-label">Почему подходит</div>
               {r.why_fits}
             </div>
             {r.concerns && (
-              <div className="explanation">
+              <div className="explanation concern">
                 <div className="explanation-label">Что смущает</div>
                 {r.concerns}
-              </div>
-            )}
-            {r.recommendation && (
-              <div className="explanation" style={{ borderColor: 'rgba(168, 85, 247, 0.3)' }}>
-                <div className="explanation-label">Рекомендация</div>
-                {r.recommendation}
               </div>
             )}
             {v?.url && (

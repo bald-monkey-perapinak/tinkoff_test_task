@@ -1,41 +1,130 @@
-import { useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import WebApp from '@twa-dev/sdk';
-import { useVacancyAgent } from './hooks/useVacancyAgent';
-import { SearchTab } from './components/SearchTab';
-import { AnalysisTab } from './components/AnalysisTab';
-import { UploadTab } from './components/UploadTab';
+import { Vacancy, AnalysisResult, Criteria, Favorite, Area } from './types';
+import {
+  searchVacancies, uploadFile, analyzeVacancies,
+  getFavorites, addFavorite, removeFavorite,
+  searchAreas, exportVacancies,
+} from './api';
+import { VacancyList } from './components/VacancyList';
+import { AnalysisPanel } from './components/AnalysisPanel';
+import { FileUpload } from './components/FileUpload';
 import { SubscriptionsTab } from './components/SubscriptionsTab';
 
+type Tab = 'search' | 'analysis' | 'upload' | 'subs';
+
+const TAB_LABELS: Record<Tab, string> = {
+  search: 'Поиск',
+  analysis: 'AI-анализ',
+  upload: 'Загрузка',
+  subs: 'Уведомления',
+};
+
+const SCHEDULE_OPTIONS = [
+  { value: '', label: 'Любой формат' },
+  { value: 'remote', label: 'Удалёнка' },
+  { value: 'fullDay', label: 'Полный день' },
+  { value: 'flexible', label: 'Гибкий' },
+];
+
+const EXPERIENCE_OPTIONS = [
+  { value: '', label: 'Любой опыт' },
+  { value: 'noExperience', label: 'Без опыта' },
+  { value: 'between1And3', label: '1–3 года' },
+  { value: 'between3And6', label: '3–6 лет' },
+];
+
+function applyTelegramTheme() {
+  const theme = WebApp.themeParams;
+  const root = document.documentElement;
+  if (theme.bg_color) root.style.setProperty('--paper', theme.bg_color);
+  if (theme.text_color) root.style.setProperty('--ink', theme.text_color);
+  if (theme.secondary_bg_color) root.style.setProperty('--paper-raised', theme.secondary_bg_color);
+  if (theme.hint_color) root.style.setProperty('--ink-soft', theme.hint_color);
+}
+
+function applyTelegramViewport() {
+  const root = document.documentElement;
+  root.style.setProperty('--tg-viewport-height', `${WebApp.viewportHeight}px`);
+  root.style.setProperty('--tg-viewport-stable-height', `${WebApp.viewportStableHeight}px`);
+  root.style.setProperty('--tg-safe-area-inset-top', `${WebApp.safeAreaInset?.top ?? 0}px`);
+  root.style.setProperty('--tg-safe-area-inset-bottom', `${WebApp.safeAreaInset?.bottom ?? 0}px`);
+}
+
+function showError(msg: string) {
+  try {
+    WebApp.showAlert(msg);
+  } catch {
+    console.error(msg);
+  }
+}
+
+const STORAGE_KEY = 'vacancy_agent_filters';
+
+function loadFilters() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+
+function saveFilters(filters: Record<string, unknown>) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(filters));
+  } catch {}
+}
+
 export default function App() {
-  const {
-    tab, setTab,
-    query, setQuery,
-    areaName,
-    salaryFrom, setSalaryFrom,
-    schedule, setSchedule,
-    experience, setExperience,
-    remoteOnly, setRemoteOnly,
-    dateFrom, setDateFrom,
-    vacancies, total, results, report,
-    favorites,
-    searching, analyzing, uploading,
-    areaSuggestions, loadingMore, hasMore,
-    handleSearch, handleAreaSearch, handleSelectArea,
-    handleAnalyze, handleUpload, toggleFavorite,
-    handleLoadMore, handleExport, openVacancyUrl,
-  } = useVacancyAgent();
+  const saved = loadFilters();
+  const [tab, setTab] = useState<Tab>('search');
+  const [query, setQuery] = useState(saved?.query ?? '');
+  const [area, setArea] = useState(saved?.area ?? '');
+  const [areaName, setAreaName] = useState(saved?.areaName ?? '');
+  const [salaryFrom, setSalaryFrom] = useState(saved?.salaryFrom ?? '');
+  const [schedule, setSchedule] = useState(saved?.schedule ?? '');
+  const [experience, setExperience] = useState(saved?.experience ?? '');
+  const [remoteOnly, setRemoteOnly] = useState(saved?.remoteOnly ?? false);
+  const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? '');
 
-  const handleBackToSearch = useCallback(() => {
-    setTab('search');
-  }, [setTab]);
+  const [vacancies, setVacancies] = useState<Vacancy[]>([]);
+  const [total, setTotal] = useState(0);
+  const [results, setResults] = useState<AnalysisResult[]>([]);
+  const [report, setReport] = useState('');
+  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [favList, setFavList] = useState<Favorite[]>([]);
 
-  const handleAnalyzeClick = useCallback(() => {
-    handleAnalyze();
-  }, [handleAnalyze]);
+  const [searching, setSearching] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [areaSuggestions, setAreaSuggestions] = useState<Area[]>([]);
+  const [page, setPage] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
-  const handleUploadClick = useCallback(() => {
-    const input = document.querySelector<HTMLInputElement>('input[type="file"]');
-    input?.click();
+  const sessionIdRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    saveFilters({ query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom });
+  }, [query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom]);
+
+  useEffect(() => {
+    WebApp.ready();
+    WebApp.expand();
+    applyTelegramTheme();
+    applyTelegramViewport();
+
+    WebApp.onEvent('themeChanged', applyTelegramTheme);
+    WebApp.onEvent('viewportChanged', applyTelegramViewport);
+
+    loadFavorites();
+
+    return () => {
+      WebApp.offEvent('themeChanged', applyTelegramTheme);
+      WebApp.offEvent('viewportChanged', applyTelegramViewport);
+      abortRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -45,97 +134,378 @@ export default function App() {
     if (tab === 'search' && vacancies.length > 0) {
       WebApp.MainButton.setText('AI-проанализировать');
       WebApp.MainButton.show();
-      WebApp.MainButton.onClick(handleAnalyzeClick);
+      WebApp.MainButton.onClick(handleAnalyze);
     }
 
     if (tab === 'analysis' && results.length > 0) {
       WebApp.BackButton.show();
-      WebApp.BackButton.onClick(handleBackToSearch);
+      WebApp.BackButton.onClick(() => setTab('search'));
     }
 
     if (tab === 'upload') {
       WebApp.MainButton.setText('Загрузить файл');
       WebApp.MainButton.show();
-      WebApp.MainButton.onClick(handleUploadClick);
+      WebApp.MainButton.onClick(() => {
+        const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+        input?.click();
+      });
     }
 
     return () => {
-      WebApp.MainButton.offClick(handleAnalyzeClick);
-      WebApp.MainButton.offClick(handleUploadClick);
-      WebApp.BackButton.offClick(handleBackToSearch);
+      WebApp.MainButton.offClick(() => {});
+      WebApp.BackButton.offClick(() => {});
     };
-  }, [tab, vacancies, results, handleAnalyzeClick, handleUploadClick, handleBackToSearch]);
+  }, [tab, vacancies, results]);
+
+  async function loadFavorites() {
+    try {
+      const data = await getFavorites();
+      setFavList(data.favorites);
+      setFavorites(new Set(data.favorites.map((f) => f.vacancy_id)));
+    } catch (err) {
+      console.warn('Failed to load favorites:', err);
+    }
+  }
+
+  const handleSearch = useCallback(async () => {
+    if (searching) return;
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+
+    WebApp.MainButton.showProgress();
+    setSearching(true);
+    setResults([]);
+    setReport('');
+    setPage(0);
+    try {
+      const data = await searchVacancies({
+        query,
+        area: area || undefined,
+        salary_from: salaryFrom ? parseInt(salaryFrom) : undefined,
+        schedule: schedule || undefined,
+        experience: experience || undefined,
+        per_page: 20,
+      });
+      setVacancies(data.vacancies);
+      setTotal(data.total);
+      setHasMore(data.vacancies.length < data.total);
+      WebApp.HapticFeedback.notificationOccurred('success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
+      showError(`Ошибка поиска: ${msg}`);
+      WebApp.HapticFeedback.notificationOccurred('error');
+    }
+    setSearching(false);
+    WebApp.MainButton.hideProgress();
+  }, [query, area, salaryFrom, schedule, experience, searching]);
+
+  const handleAreaSearch = useCallback(async (q: string) => {
+    setAreaName(q);
+    if (q.length < 2) {
+      setAreaSuggestions([]);
+      return;
+    }
+    try {
+      const data = await searchAreas(q);
+      setAreaSuggestions(data.areas);
+    } catch {
+      setAreaSuggestions([]);
+    }
+  }, []);
+
+  const handleSelectArea = (a: Area) => {
+    setArea(a.id);
+    setAreaName(a.name);
+    setAreaSuggestions([]);
+    WebApp.HapticFeedback.impactOccurred('light');
+  };
+
+  const handleAnalyze = useCallback(async () => {
+    if (analyzing) return;
+    WebApp.MainButton.showProgress();
+    setAnalyzing(true);
+    WebApp.MainButton.setText('AI анализирует...');
+    const criteria: Criteria = {
+      direction: query,
+      city: areaName,
+      remote_only: remoteOnly,
+      min_salary: salaryFrom ? parseInt(salaryFrom) : null,
+      experience_level: experience,
+      key_skills: [],
+      date_from: dateFrom || null,
+    };
+    try {
+      const data = await analyzeVacancies(criteria);
+      setResults(data.results);
+      setReport(data.report);
+      WebApp.HapticFeedback.notificationOccurred('success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
+      showError(`Ошибка AI-анализа: ${msg}`);
+      WebApp.HapticFeedback.notificationOccurred('error');
+    }
+    setAnalyzing(false);
+    WebApp.MainButton.hideProgress();
+    WebApp.MainButton.setText('AI-проанализировать');
+  }, [query, areaName, remoteOnly, salaryFrom, experience, dateFrom, analyzing]);
+
+  const handleUpload = useCallback(async (file: File) => {
+    if (uploading) return;
+    setUploading(true);
+    WebApp.MainButton.showProgress();
+    try {
+      const data = await uploadFile(file);
+      sessionIdRef.current = data.session_id;
+      setVacancies(data.vacancies);
+      setTotal(data.loaded);
+      WebApp.HapticFeedback.notificationOccurred('success');
+      WebApp.showAlert(`Загружено ${data.loaded} вакансий`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
+      showError(`Ошибка загрузки: ${msg}`);
+      WebApp.HapticFeedback.notificationOccurred('error');
+    }
+    setUploading(false);
+    WebApp.MainButton.hideProgress();
+  }, [uploading]);
+
+  const toggleFavorite = useCallback(async (v: Vacancy) => {
+    const isFav = favorites.has(v.id);
+    try {
+      if (isFav) {
+        await removeFavorite(v.id);
+      } else {
+        await addFavorite({ vacancy_id: v.id, title: v.title, company: v.company, url: v.url });
+      }
+      await loadFavorites();
+      WebApp.HapticFeedback.impactOccurred('medium');
+    } catch (err) {
+      showError('Не удалось обновить избранное');
+    }
+  }, [favorites]);
+
+  const handleDownloadReport = () => {
+    const blob = new Blob([report], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'vacancy-report.md';
+    a.click();
+    URL.revokeObjectURL(url);
+    WebApp.HapticFeedback.impactOccurred('light');
+  };
+
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const data = await searchVacancies({
+        query,
+        area: area || undefined,
+        salary_from: salaryFrom ? parseInt(salaryFrom) : undefined,
+        schedule: schedule || undefined,
+        experience: experience || undefined,
+        page: nextPage,
+        per_page: 20,
+      });
+      setVacancies((prev) => [...prev, ...data.vacancies]);
+      setPage(nextPage);
+      setHasMore((vacancies.length + data.vacancies.length) < data.total);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
+      showError(`Ошибка загрузки: ${msg}`);
+    }
+    setLoadingMore(false);
+  }, [query, area, salaryFrom, schedule, experience, page, loadingMore, vacancies.length]);
+
+  const handleExport = useCallback(async (format: 'json' | 'csv') => {
+    try {
+      const blob = await exportVacancies(format);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `vacancy-export.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      WebApp.HapticFeedback.impactOccurred('light');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
+      showError(`Ошибка экспорта: ${msg}`);
+    }
+  }, []);
+
+  const openVacancyUrl = (url: string) => {
+    if (url) {
+      WebApp.openLink(url);
+    }
+  };
 
   const currentFilters = { query, area: areaName, schedule, min_salary: salaryFrom ? parseInt(salaryFrom) : null };
 
   return (
     <div className="app" style={{ paddingTop: 'var(--tg-safe-area-inset-top)' }}>
-      <div className="tabs" role="tablist" aria-label="Main navigation">
-        <button className={`tab ${tab === 'search' ? 'active' : ''}`} role="tab" aria-selected={tab === 'search'} onClick={() => setTab('search')}>
-          Поиск
-        </button>
-        <button className={`tab ${tab === 'analysis' ? 'active' : ''}`} role="tab" aria-selected={tab === 'analysis'} onClick={() => setTab('analysis')}>
-          AI-анализ
-        </button>
-        <button className={`tab ${tab === 'upload' ? 'active' : ''}`} role="tab" aria-selected={tab === 'upload'} onClick={() => setTab('upload')}>
-          Загрузка
-        </button>
-        <button className={`tab ${tab === 'subs' ? 'active' : ''}`} role="tab" aria-selected={tab === 'subs'} onClick={() => setTab('subs')}>
-          Уведомления
-        </button>
+      <div className="masthead">
+        <div className="masthead-eyebrow">
+          {favList.length > 0 ? `${favList.length} в избранном` : 'Карьерный агент'}
+        </div>
+        <div className="masthead-title">Поиск вакансий</div>
+      </div>
+
+      <div className="tabs">
+        {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
+          <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+            {TAB_LABELS[t]}
+          </button>
+        ))}
       </div>
 
       {tab === 'search' && (
-        <SearchTab
-          query={query}
-          setQuery={setQuery}
-          areaName={areaName}
-          salaryFrom={salaryFrom}
-          setSalaryFrom={setSalaryFrom}
-          schedule={schedule}
-          setSchedule={setSchedule}
-          experience={experience}
-          setExperience={setExperience}
-          remoteOnly={remoteOnly}
-          setRemoteOnly={setRemoteOnly}
-          dateFrom={dateFrom}
-          setDateFrom={setDateFrom}
-          vacancies={vacancies}
-          total={total}
-          favorites={favorites}
-          searching={searching}
-          areaSuggestions={areaSuggestions}
-          loadingMore={loadingMore}
-          hasMore={hasMore}
-          onSearch={handleSearch}
-          onAreaSearch={handleAreaSearch}
-          onSelectArea={handleSelectArea}
-          onToggleFavorite={toggleFavorite}
-          onLoadMore={handleLoadMore}
-          onOpenUrl={openVacancyUrl}
-        />
+        <>
+          <div className="search-form">
+            <div>
+              <span className="field-label">Должность</span>
+              <input
+                className="input"
+                placeholder="например, «junior python developer»"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                maxLength={200}
+              />
+            </div>
+            <div style={{ position: 'relative' }}>
+              <span className="field-label">Город</span>
+              <input
+                className="input"
+                placeholder="Любой город"
+                value={areaName}
+                onChange={(e) => handleAreaSearch(e.target.value)}
+                maxLength={100}
+              />
+              {areaSuggestions.length > 0 && (
+                <div className="autocomplete-pop">
+                  {areaSuggestions.map((a) => (
+                    <div key={a.id} className="autocomplete-item" onClick={() => handleSelectArea(a)}>
+                      {a.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="filters-row">
+              <div>
+                <span className="field-label">Зарплата от</span>
+                <input
+                  className="input"
+                  type="number"
+                  placeholder="0"
+                  value={salaryFrom}
+                  onChange={(e) => setSalaryFrom(e.target.value)}
+                  min={0}
+                  max={10000000}
+                />
+              </div>
+              <div>
+                <span className="field-label">Формат</span>
+                <select className="select" value={schedule} onChange={(e) => setSchedule(e.target.value)}>
+                  {SCHEDULE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="filters-row" style={{ alignItems: 'end' }}>
+              <div>
+                <span className="field-label">Опыт</span>
+                <select className="select" value={experience} onChange={(e) => setExperience(e.target.value)}>
+                  {EXPERIENCE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <label className="checkbox-row" style={{ paddingBottom: 12 }}>
+                <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} />
+                Только удалёнка
+              </label>
+            </div>
+            <div>
+              <span className="field-label">Дата публикации от</span>
+              <input
+                className="input"
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+            </div>
+            <button className="btn btn-primary" onClick={handleSearch} disabled={searching}>
+              {searching ? 'Поиск...' : 'Найти вакансии'}
+            </button>
+          </div>
+          {total > 0 && (
+            <div className="total-badge" style={{ marginTop: 16 }}>
+              Найдено: {total} · показаны первые {vacancies.length}
+            </div>
+          )}
+          <VacancyList
+            vacancies={vacancies}
+            favorites={favorites}
+            onToggleFavorite={toggleFavorite}
+            onOpenUrl={openVacancyUrl}
+          />
+          {hasMore && (
+            <button
+              className="btn btn-outline"
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+              style={{ width: '100%', marginTop: 4 }}
+            >
+              {loadingMore ? 'Загрузка...' : 'Загрузить ещё'}
+            </button>
+          )}
+        </>
       )}
 
       {tab === 'analysis' && (
-        <AnalysisTab
-          results={results}
-          report={report}
-          analyzing={analyzing}
-          onAnalyze={handleAnalyze}
-          onOpenUrl={openVacancyUrl}
-          onExport={handleExport}
-        />
+        <>
+          <button className="btn btn-primary" onClick={handleAnalyze} disabled={analyzing} style={{ width: '100%', marginBottom: 16 }}>
+            {analyzing ? 'AI анализирует...' : 'AI-проанализировать вакансии'}
+          </button>
+          <AnalysisPanel results={results} onOpenUrl={openVacancyUrl} />
+          {report && (
+            <>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <button className="btn btn-outline btn-sm" onClick={handleDownloadReport} style={{ flex: 1 }}>
+                  .md
+                </button>
+                <button className="btn btn-outline btn-sm" onClick={() => handleExport('csv')} style={{ flex: 1 }}>
+                  .csv
+                </button>
+                <button className="btn btn-outline btn-sm" onClick={() => handleExport('json')} style={{ flex: 1 }}>
+                  .json
+                </button>
+              </div>
+              <div className="report-view">{report}</div>
+            </>
+          )}
+        </>
       )}
 
       {tab === 'upload' && (
-        <UploadTab
-          vacancies={vacancies}
-          favorites={favorites}
-          uploading={uploading}
-          onFileSelect={handleUpload}
-          onToggleFavorite={toggleFavorite}
-          onOpenUrl={openVacancyUrl}
-        />
+        <>
+          <FileUpload onFileSelect={handleUpload} isLoading={uploading} />
+          {vacancies.length > 0 && (
+            <>
+              <div className="total-badge" style={{ marginTop: 16 }}>Загружено: {vacancies.length} вакансий</div>
+              <VacancyList
+                vacancies={vacancies}
+                favorites={favorites}
+                onToggleFavorite={toggleFavorite}
+                onOpenUrl={openVacancyUrl}
+              />
+            </>
+          )}
+        </>
       )}
 
       {tab === 'subs' && (

@@ -27,13 +27,11 @@ export function FileUpload({ onFileSelect, isLoading }: Props) {
         onDrop={handleDrop}
         onClick={() => inputRef.current?.click()}
       >
-        <div className="upload-zone-icon">📄</div>
+        <div className="upload-zone-icon">↑</div>
         <div className="upload-zone-text">
           {isLoading ? 'Загрузка...' : 'Перетащите файл или нажмите для выбора'}
         </div>
-        <div className="upload-zone-text" style={{ fontSize: 11, marginTop: 4 }}>
-          Поддерживаются: .json, .csv
-        </div>
+        <div className="upload-zone-hint">.json / .csv</div>
       </div>
       <input
         ref={inputRef}

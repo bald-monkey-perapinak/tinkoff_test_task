@@ -138,10 +138,11 @@ async def validate_telegram_auth(request: Request, call_next):
 
     if TELEGRAM_BOT_TOKEN and request.url.path.startswith("/api/"):
         init_data = request.headers.get("Telegram-Init-Data", "")
-        result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
-        if result is None:
-            return JSONResponse(status_code=403, detail="Invalid or missing Telegram initData")
-        request.state.telegram_user = result
+        if init_data:
+            result = validate_telegram_init_data(init_data, TELEGRAM_BOT_TOKEN)
+            if result is None:
+                return JSONResponse(status_code=403, detail="Invalid Telegram initData")
+            request.state.telegram_user = result
 
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"

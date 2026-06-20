@@ -22,6 +22,7 @@ export interface AnalysisResult {
   why_fits: string;
   concerns: string;
   summary: string;
+  recommendation: string;
   vacancy?: Vacancy;
 }
 
@@ -32,6 +33,7 @@ export interface Criteria {
   min_salary: number | null;
   experience_level: string;
   key_skills: string[];
+  date_from: string | null;
 }
 
 export interface Favorite {

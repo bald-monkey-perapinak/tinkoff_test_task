@@ -43,6 +43,9 @@ def generate_report(
         lines.append(f"**Почему подходит:** {r.why_fits}")
         lines.append(f"")
         lines.append(f"**Что смущает:** {r.concerns}")
+        if r.recommendation:
+            lines.append(f"")
+            lines.append(f"**Рекомендация:** {r.recommendation}")
         if v and v.skills:
             lines.append(f"")
             lines.append(f"**Навыки:** {', '.join(v.skills)}")

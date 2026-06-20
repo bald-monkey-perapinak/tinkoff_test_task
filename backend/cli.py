@@ -16,6 +16,7 @@ CRITERIA_FIELDS = {
     "минимальная зарплата": "min_salary",
     "уровень": "experience_level",
     "навыки": "key_skills",
+    "дата публикации от": "date_from",
 }
 
 
@@ -62,6 +63,7 @@ def interactive_criteria() -> CriteriaInput:
     experience_level = input("  Уровень опыта (без опыта / 1-3 года / 3-6 лет): ").strip()
     skills_raw = input("  Навыки (через запятую): ").strip()
     key_skills = [s.strip() for s in skills_raw.split(",") if s.strip()] if skills_raw else []
+    date_from = input("  Дата публикации от (YYYY-MM-DD): ").strip() or None
 
     return CriteriaInput(
         direction=direction,
@@ -70,6 +72,7 @@ def interactive_criteria() -> CriteriaInput:
         min_salary=min_salary,
         experience_level=experience_level,
         key_skills=key_skills,
+        date_from=date_from,
     )
 
 
@@ -81,6 +84,7 @@ def build_criteria_text(criteria: CriteriaInput) -> str:
         f"- Минимальная зарплата: {criteria.min_salary}" if criteria.min_salary else None,
         f"- Уровень: {criteria.experience_level}" if criteria.experience_level else None,
         f"- Навыки: {', '.join(criteria.key_skills)}" if criteria.key_skills else None,
+        f"- Дата публикации от: {criteria.date_from}" if criteria.date_from else None,
     ]))
 
 

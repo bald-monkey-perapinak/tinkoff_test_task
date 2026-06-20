@@ -12,7 +12,7 @@ DB_PATH = BASE_DIR / "vacancy_bot.db"
 HH_API_BASE = "https://api.hh.ru"
 HH_USER_AGENT = os.getenv(
     "HH_USER_AGENT",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "VacancyAgent/1.0",
 )
 HH_PROXY = os.getenv("HH_PROXY", "")
 HH_PROXY_LIST = os.getenv("HH_PROXY_LIST", "")

@@ -253,6 +253,7 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
             f"- Минимальная зарплата: {criteria.min_salary}" if criteria.min_salary else None,
             f"- Уровень: {criteria.experience_level}" if criteria.experience_level else None,
             f"- Навыки: {', '.join(criteria.key_skills)}" if criteria.key_skills else None,
+            f"- Дата публикации от: {criteria.date_from}" if criteria.date_from else None,
         ]))
 
         report = generate_report(vacancies_to_analyze, results, criteria_text)

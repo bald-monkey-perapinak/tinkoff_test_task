@@ -75,6 +75,12 @@ export function AnalysisPanel({ results, onOpenUrl }: Props) {
                 {r.concerns}
               </div>
             )}
+            {r.recommendation && (
+              <div className="explanation" style={{ borderColor: 'rgba(168, 85, 247, 0.3)' }}>
+                <div className="explanation-label">Рекомендация</div>
+                {r.recommendation}
+              </div>
+            )}
             {v?.url && (
               <button className="link-btn" onClick={() => handleOpen(v.url)}>
                 Открыть вакансию →

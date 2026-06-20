@@ -23,7 +23,6 @@ HEADERS = {
     "User-Agent": HH_USER_AGENT,
     "Accept": "application/json",
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://hh.ru/",
 }
 
 
@@ -98,7 +97,7 @@ async def _load_dictionaries():
         _load_proxy_list()
         proxy = _get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=proxy, verify=False) as client:
+            async with httpx.AsyncClient(proxy=proxy) as client:
                 for attempt in range(MAX_RETRIES):
                     try:
                         resp = await client.get(f"{HH_API_BASE}/areas", headers=HEADERS, timeout=10)
@@ -208,7 +207,7 @@ async def search_vacancies(params: SearchParams) -> tuple[list[Vacancy], int]:
     for attempt in range(MAX_RETRIES):
         proxy = _get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=proxy, verify=False) as client:
+            async with httpx.AsyncClient(proxy=proxy) as client:
                 resp = await client.get(
                     f"{HH_API_BASE}/vacancies",
                     params=query_params,

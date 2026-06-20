@@ -73,6 +73,12 @@ class TestParseCriteriaFile:
         result = parse_criteria_file(str(criteria_path))
         assert result.min_salary is None
 
+    def test_date_from_criteria(self, tmp_path):
+        criteria_path = tmp_path / "criteria.md"
+        criteria_path.write_text("- Дата публикации от: 2026-06-01\n", encoding="utf-8")
+        result = parse_criteria_file(str(criteria_path))
+        assert result.date_from == "2026-06-01"
+
 
 class TestBuildCriteriaText:
 
@@ -105,3 +111,8 @@ class TestBuildCriteriaText:
         assert "- Минимальная зарплата: 100000" in text
         assert "Город" not in text
         assert "удалёнка" not in text
+
+    def test_date_from_in_text(self):
+        criteria = CriteriaInput(direction="Python", date_from="2026-06-01")
+        text = build_criteria_text(criteria)
+        assert "- Дата публикации от: 2026-06-01" in text

@@ -81,6 +81,7 @@ export default function App() {
   const [schedule, setSchedule] = useState(saved?.schedule ?? '');
   const [experience, setExperience] = useState(saved?.experience ?? '');
   const [remoteOnly, setRemoteOnly] = useState(saved?.remoteOnly ?? false);
+  const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? '');
 
   const [vacancies, setVacancies] = useState<Vacancy[]>([]);
   const [total, setTotal] = useState(0);
@@ -101,8 +102,8 @@ export default function App() {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    saveFilters({ query, area, areaName, salaryFrom, schedule, experience, remoteOnly });
-  }, [query, area, areaName, salaryFrom, schedule, experience, remoteOnly]);
+    saveFilters({ query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom });
+  }, [query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom]);
 
   useEffect(() => {
     WebApp.ready();
@@ -227,6 +228,7 @@ export default function App() {
       min_salary: salaryFrom ? parseInt(salaryFrom) : null,
       experience_level: experience,
       key_skills: [],
+      date_from: dateFrom || null,
     };
     try {
       const data = await analyzeVacancies(criteria);
@@ -241,7 +243,7 @@ export default function App() {
     setAnalyzing(false);
     WebApp.MainButton.hideProgress();
     WebApp.MainButton.setText('AI-проанализировать');
-  }, [query, areaName, remoteOnly, salaryFrom, experience, analyzing]);
+  }, [query, areaName, remoteOnly, salaryFrom, experience, dateFrom, analyzing]);
 
   const handleUpload = useCallback(async (file: File) => {
     if (uploading) return;
@@ -428,6 +430,13 @@ export default function App() {
                 Только удалёнка
               </label>
             </div>
+            <input
+              className="input"
+              type="date"
+              placeholder="Дата публикации от"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
             <button className="btn btn-primary" onClick={handleSearch} disabled={searching}>
               {searching ? 'Поиск...' : 'Найти вакансии'}
             </button>

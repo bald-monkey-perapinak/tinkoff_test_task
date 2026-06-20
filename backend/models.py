@@ -68,6 +68,7 @@ class AnalysisResult(BaseModel):
     why_fits: str = ""
     concerns: str = ""
     summary: str = ""
+    recommendation: str = ""
 
 
 class CriteriaInput(BaseModel):
@@ -77,6 +78,7 @@ class CriteriaInput(BaseModel):
     min_salary: Optional[int] = None
     experience_level: str = ""
     key_skills: list[str] = []
+    date_from: Optional[str] = None
 
 
 class Subscription(BaseModel):

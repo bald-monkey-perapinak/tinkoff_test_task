@@ -3,6 +3,7 @@ import re
 import hashlib
 import logging
 import asyncio
+from datetime import datetime
 from config import GROQ_API_KEY, PROMPT_INPUT_MAX_LEN, LLM_MODEL, LLM_TEMPERATURE, LLM_MAX_TOKENS
 from models import Vacancy, CriteriaInput, AnalysisResult
 from database import get_analysis_cache, set_analysis_cache
@@ -21,6 +22,17 @@ RULE_BASED_RESULTS = [
 ]
 
 
+def _parse_date(date_str: str) -> datetime | None:
+    if not date_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d.%m.%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _sanitize(text: str) -> str:
     if not text:
         return ""
@@ -29,8 +41,15 @@ def _sanitize(text: str) -> str:
 
 
 def _rule_based_analyze(vacancies: list[Vacancy], criteria: CriteriaInput) -> list[AnalysisResult]:
+    date_threshold = _parse_date(criteria.date_from) if criteria.date_from else None
     results = []
-    for i, v in enumerate(vacancies[:5]):
+
+    for v in vacancies[:20]:
+        if date_threshold and v.published_at:
+            pub_date = _parse_date(v.published_at)
+            if pub_date and pub_date < date_threshold:
+                continue
+
         score = 5
         concerns = []
         why = []
@@ -59,13 +78,35 @@ def _rule_based_analyze(vacancies: list[Vacancy], criteria: CriteriaInput) -> li
 
         results.append(AnalysisResult(
             vacancy_id=v.id,
-            rank=i + 1,
+            rank=1,
             fit_score=min(score, 10),
-            why_fits="; ".join(why) if why else RULE_BASED_RESULTS[i % len(RULE_BASED_RESULTS)],
+            why_fits="; ".join(why),
             concerns="; ".join(concerns) if concerns else "серьёзных замечаний нет",
             summary=f"{v.title} в {v.company}",
         ))
-    return results
+
+    results.sort(key=lambda r: r.fit_score, reverse=True)
+    for i, r in enumerate(results):
+        r.rank = i + 1
+
+    top = results[:5]
+    if not top:
+        for r in results[:5]:
+            r.recommendation = "Нет подходящих вакансий. Попробуйте расширить критерии поиска."
+    elif all(r.fit_score < 5 for r in top):
+        for r in top:
+            r.recommendation = "Ни одна вакансия не набрала более 4 баллов. Рекомендуется расширить поиск или снизить требования."
+    else:
+        low = [r for r in top if r.fit_score < 5]
+        if low:
+            for r in low:
+                r.recommendation = "Эта вакансия слабо подходит. Обратите внимание на вакансии с более высоким score."
+        high = [r for r in top if r.fit_score >= 7]
+        if high:
+            for r in high:
+                r.recommendation = "Хороший вариант — стоит откликнуться."
+
+    return top
 
 
 def _build_cache_key(vacancies: list[Vacancy], criteria: CriteriaInput) -> str:
@@ -77,6 +118,7 @@ def _build_cache_key(vacancies: list[Vacancy], criteria: CriteriaInput) -> str:
         "s": criteria.min_salary,
         "e": criteria.experience_level,
         "k": sorted(criteria.key_skills),
+        "df": criteria.date_from or "",
     }
     return hashlib.sha256(json.dumps(key_data, sort_keys=True).encode()).hexdigest()[:32]
 
@@ -124,6 +166,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
 - Минимальная зарплата: {criteria.min_salary or 'не указана'}
 - Уровень опыта: {safe_level or 'любой'}
 - Ключевые навыки: {safe_skills or 'не указаны'}
+- Дата публикации от: {criteria.date_from or 'любая'}
 
 Вакансии:
 {json.dumps(vacancy_summaries, ensure_ascii=False, indent=2)}
@@ -136,7 +179,8 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
     "fit_score": число от 1 до 10,
     "why_fits": "почему подходит (1-2 предложения)",
     "concerns": "что смущает (1-2 предложения)",
-    "summary": "краткое резюме вакансии"
+    "summary": "краткое резюме вакансии",
+    "recommendation": "рекомендация: что сделать дальше (откликнуться, расширить поиск, изменить критерии)"
   }}
 ]
 
@@ -144,6 +188,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
 - Отранжируй по fit_score от лучшего к худшему
 - rank должен начинаться с 1 и идти по порядку
 - Будь честен: если вакансия плохо подходит — скажи
+- В поле recommendation дай конкретный совет пользователю
 - Отвечай ТОЛЬКО валидным JSON, без текста до/после"""
 
         response = None
@@ -192,6 +237,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput) ->
                     why_fits=str(item.get("why_fits", ""))[:500],
                     concerns=str(item.get("concerns", ""))[:500],
                     summary=str(item.get("summary", ""))[:200],
+                    recommendation=str(item.get("recommendation", ""))[:500],
                 ))
             except Exception as e:
                 logger.warning(f"Skipping invalid LLM result: {e}")

@@ -5,7 +5,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models import Vacancy, CriteriaInput, AnalysisResult
-from services.analyzer import _rule_based_analyze, _sanitize
+from services.analyzer import _rule_based_analyze, _sanitize, _parse_date
 
 
 class TestSanitize:
@@ -87,14 +87,34 @@ class TestRuleBasedAnalyze:
         assert results[1].rank == 2
         assert results[2].rank == 3
 
-    def test_max_5_vacancies(self):
-        """Only first 5 vacancies are analyzed."""
+    def test_ranking_by_fit_score(self):
+        """Results are sorted by fit_score descending, rank reflects actual score order."""
+        vacancies = [
+            Vacancy(id="1", title="Java Dev", company="A"),
+            Vacancy(id="2", title="Python Developer", company="B", schedule="удалённый", salary_from=100000, skills=["python"]),
+            Vacancy(id="3", title="C++ Dev", company="C"),
+        ]
+        criteria = CriteriaInput(direction="Python", remote_only=True, min_salary=80000, key_skills=["python"])
+        results = _rule_based_analyze(vacancies, criteria)
+        assert len(results) == 3
+        assert results[0].vacancy_id == "2"
+        assert results[0].fit_score >= 9
+        assert results[0].rank == 1
+        assert results[1].rank == 2
+        assert results[2].rank == 3
+        for i in range(len(results) - 1):
+            assert results[i].fit_score >= results[i + 1].fit_score
+
+    def test_max_5_returned(self):
+        """Only top 5 are returned after ranking."""
         vacancies = [
             Vacancy(id=str(i), title=f"Dev{i}", company="C")
             for i in range(10)
         ]
         results = _rule_based_analyze(vacancies, CriteriaInput())
         assert len(results) == 5
+        for i, r in enumerate(results):
+            assert r.rank == i + 1
 
     def test_direction_match(self):
         """Direction matching in title increases score and adds reason."""
@@ -276,3 +296,57 @@ class TestRuleBasedAnalyze:
         vacancies = [Vacancy(id="1", title="Dev", company="C", skills=["py"], salary=salary)]
         results = _rule_based_analyze(vacancies, CriteriaInput())
         assert expected_concern in results[0].concerns
+
+    def test_date_from_filters_old_vacancies(self):
+        """Vacancies older than date_from are excluded."""
+        vacancies = [
+            Vacancy(id="1", title="Old Dev", company="A", published_at="2026-01-01"),
+            Vacancy(id="2", title="New Dev", company="B", published_at="2026-06-15"),
+            Vacancy(id="3", title="Recent Dev", company="C", published_at="2026-06-20"),
+        ]
+        criteria = CriteriaInput(date_from="2026-06-10")
+        results = _rule_based_analyze(vacancies, criteria)
+        ids = [r.vacancy_id for r in results]
+        assert "1" not in ids
+        assert "2" in ids
+        assert "3" in ids
+
+    def test_date_from_no_filter_when_empty(self):
+        """Empty date_from does not filter anything."""
+        vacancies = [
+            Vacancy(id="1", title="Dev1", company="A", published_at="2020-01-01"),
+            Vacancy(id="2", title="Dev2", company="B", published_at="2026-06-20"),
+        ]
+        results = _rule_based_analyze(vacancies, CriteriaInput())
+        assert len(results) == 2
+
+    def test_date_from_skips_vacancies_without_date(self):
+        """Vacancies without published_at are not filtered by date_from."""
+        vacancies = [
+            Vacancy(id="1", title="Dev1", company="A", published_at=""),
+            Vacancy(id="2", title="Dev2", company="B", published_at="2026-06-20"),
+        ]
+        criteria = CriteriaInput(date_from="2026-06-15")
+        results = _rule_based_analyze(vacancies, criteria)
+        assert len(results) == 2
+
+    def test_recommendation_generated_for_high_score(self):
+        """High score vacancies get 'стоит откликнуться' recommendation."""
+        vacancies = [
+            Vacancy(id="1", title="Python Developer", company="C", skills=["python"]),
+        ]
+        criteria = CriteriaInput(direction="Python")
+        results = _rule_based_analyze(vacancies, criteria)
+        assert results[0].recommendation == "Хороший вариант — стоит откликнуться."
+
+    def test_parse_date_valid(self):
+        """_parse_date handles standard formats."""
+        assert _parse_date("2026-06-15") is not None
+        assert _parse_date("15.06.2026") is not None
+        assert _parse_date("2026-06-15T10:30:00") is not None
+
+    def test_parse_date_invalid(self):
+        """_parse_date returns None for invalid input."""
+        assert _parse_date("") is None
+        assert _parse_date("not-a-date") is None
+        assert _parse_date(None) is None

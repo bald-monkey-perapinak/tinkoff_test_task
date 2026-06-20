@@ -1,6 +1,6 @@
 import { Vacancy, AnalysisResult, Criteria, Favorite, Subscription, SearchResult, Area } from './types';
 
-const BASE = '';
+const BASE = import.meta.env.VITE_API_URL || '';
 const DEFAULT_TIMEOUT = 15000;
 const MAX_RETRIES = 2;
 

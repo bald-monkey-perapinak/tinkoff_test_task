@@ -103,6 +103,9 @@ keyboard = [[InlineKeyboardButton("Открыть", web_app=WebAppInfo(url="http
 
 ## Пример входных данных
 
+> Полный пример: [`data/sample_vacancies.json`](data/sample_vacancies.json)
+> Пример отчёта: [`data/sample_report.md`](data/sample_report.md)
+
 ### vacancies.json
 ```json
 [
@@ -185,6 +188,39 @@ keyboard = [[InlineKeyboardButton("Открыть", web_app=WebAppInfo(url="http
 | GET | `/api/areas?q=` | Автокомплит городов |
 | GET | `/api/roles?q=` | Автокомплит сфер |
 
+## CLI-режим (без веб-интерфейса)
+
+Работает полностью независимо от FastAPI и фронтенда — тот же pipeline через терминал.
+
+```bash
+cd backend
+python cli.py --file ../data/sample_vacancies.json --output ../report.md
+
+# С критериями из файла:
+python cli.py --file vacancies.json --criteria criteria.md
+
+# Интерактивный ввод (если --criteria не указан):
+python cli.py --file vacancies.json
+```
+
+Формат `criteria.md`:
+```markdown
+- Направление: Python
+- Город: Москва
+- Только удалёнка: да
+- Минимальная зарплата: 80000
+- Уровень: без опыта
+- Навыки: Python, FastAPI, SQL
+```
+
+## Надёжность и безопасность
+
+- **Prompt sanitization** (`_sanitize()` в analyzer.py) — защита от injection в LLM-промпт: фильтрация `<`, `>`, `|`, `\`, `` ` `` и других опасных символов
+- **Retry с exponential backoff** — Groq API (3 попытки, задержка 1→2→4с) и hh.ru API (3 попытки + respect Retry-After при HTTP 429)
+- **Кэширование анализа** — SHA-256 hash от (вакансии + критерии), повторный запрос отдаёт кэш без обращения к LLM
+- **Rule-based fallback** — при отсутствии Groq API-ключа анализ работает на детерминированных правилах (направление, зарплата, навыки, формат)
+- **Mock-fallback для hh.ru** — при недоступности API загружаются данные из `data/sample_vacancies.json`
+
 ## Ограничения
 
 - **hh.ru API**: публичный, лимит ~200 req/мин, не требует ключа
@@ -192,6 +228,8 @@ keyboard = [[InlineKeyboardButton("Открыть", web_app=WebAppInfo(url="http
 - **Telegram Bot**: опционально, нужен BotFather для создания бота
 - **SQLite**: для прототипа
 - **Деплой**: Mini App требует HTTPS (Vercel, Netlify, Railway)
+
+**hh.ru API и ToS:** Используется только официальный публичный API hh.ru без авторизации. Переменные `HH_PROXY`/`HH_PROXY_LIST` предназначены исключительно для отказоустойчивости при сетевых блокировках IP, а **не** для обхода rate-limit или антибот защиты. При недоступности hh.ru приложение полностью работает на mock-данных (fallback).
 
 ## Стек
 

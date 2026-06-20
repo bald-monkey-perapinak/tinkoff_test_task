@@ -516,9 +516,8 @@ class VacancyAgent:
             )
 
         # ── Фаза 1: планирование ────────────────────────────────────────────
-        plan = await self._plan(criteria, memory_context)
+        plan = self.state.plan
         if plan:
-            self.state.plan = plan
             logger.info(
                 f"[Agent] Plan created: goal='{plan.goal[:80]}', "
                 f"steps={len(plan.steps)}, fallback='{plan.fallback_strategy[:60]}'"

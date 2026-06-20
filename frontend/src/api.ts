@@ -117,7 +117,7 @@ export async function analyzeVacancies(criteria: Criteria): Promise<AnalysisResp
   return request('/api/analyze', {
     method: 'POST',
     body: JSON.stringify(criteria),
-  }, 30000);
+  }, 90000);
 }
 
 export async function getFavorites(): Promise<{ favorites: Favorite[] }> {

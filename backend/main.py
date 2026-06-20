@@ -2,6 +2,7 @@ import asyncio
 import csv
 import hashlib
 import io
+import json
 import logging
 import shutil
 import time
@@ -308,7 +309,7 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
 
         results, metadata = await asyncio.wait_for(
             analyze_with_llm(vacancies_to_analyze[:ANALYSIS_MAX_VACANCIES], criteria),
-            timeout=30.0,
+            timeout=90.0,
         )
         criteria_text = build_criteria_text(criteria)
 
@@ -371,8 +372,9 @@ def _get_chat_id(request: Request) -> int:
     user = getattr(request.state, "telegram_user", None)
     if user and "user" in user:
         try:
-            return int(user["user"].split(",")[0]) if isinstance(user["user"], str) else int(user["id"])
-        except (ValueError, KeyError, TypeError):
+            user_data = json.loads(user["user"])
+            return int(user_data["id"])
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             pass
     client_host = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
@@ -422,8 +424,6 @@ async def api_get_favorites(request: Request):
 async def api_subscribe(request: Request, sub: Subscription):
     try:
         chat_id = _get_chat_id(request)
-        if sub.chat_id and sub.chat_id != chat_id:
-            raise HTTPException(status_code=403, detail="chat_id mismatch with authenticated user")
         sub.chat_id = chat_id
         sub_id = await add_subscription(sub)
         return {"id": sub_id, "status": "ok"}

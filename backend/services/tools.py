@@ -245,6 +245,7 @@ class ToolRegistry:
         for tool_cls in [
             SearchVacanciesTool,
             FilterResultsTool,
+            ScoreVacanciesTool,
             GenerateReportTool,
             ExpandSearchTool,
         ]:

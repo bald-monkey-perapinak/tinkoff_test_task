@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from circuit_breaker import groq_breaker
-from config import ANALYSIS_MAX_VACANCIES, GROQ_API_KEY, PROMPT_INPUT_MAX_LEN
+from config import ANALYSIS_MAX_VACANCIES, AGENT_TIMEOUT_SECONDS, GROQ_API_KEY, PROMPT_INPUT_MAX_LEN
 from database import get_analysis_cache, set_analysis_cache
 from models import AnalysisResult, CriteriaInput, Vacancy
 
@@ -176,7 +176,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput, us
         agent = VacancyAgent()
         results, metadata = await asyncio.wait_for(
             agent.run(vacancies, criteria, user_key=user_key),
-            timeout=30.0,
+            timeout=float(AGENT_TIMEOUT_SECONDS),
         )
 
         if not results:
@@ -194,7 +194,7 @@ async def analyze_with_llm(vacancies: list[Vacancy], criteria: CriteriaInput, us
         )
 
     except asyncio.TimeoutError:
-        logger.error("[Agent] Agent timed out after 30s")
+        logger.error(f"[Agent] Agent timed out after {AGENT_TIMEOUT_SECONDS}s")
         results = _rule_based_analyze(vacancies, criteria)
         return results, AnalysisMetadata(analysis_type="rule_based_timeout", total_vacancies_pool=len(vacancies))
     except Exception as e:

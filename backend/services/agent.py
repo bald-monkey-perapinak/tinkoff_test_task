@@ -9,6 +9,7 @@ from functools import partial
 
 from circuit_breaker import groq_breaker
 from config import (
+    AGENT_CONTEXT_WINDOW,
     AGENT_TRACE_ENABLED,
     BASE_DELAY,
     GROQ_API_KEY,
@@ -16,6 +17,7 @@ from config import (
     LLM_MODEL,
     LLM_TEMPERATURE,
     MAX_RETRIES,
+    REFLECTION_GATE_EVERY,
 )
 from database import get_agent_memory, get_similar_memory_by_criteria, save_agent_memory
 from models import (
@@ -453,13 +455,38 @@ class VacancyAgent:
         memory_context = await _load_memory_context(user_key, criteria)
         self.state.memory_context = memory_context
 
+        # ── Фаза 1: планирование ────────────────────────────────────────────
+        plan = await self._plan(criteria, memory_context)
+        if plan:
+            self.state.plan = plan
+            logger.info(
+                f"[Agent] Plan created: goal='{plan.goal[:80]}', "
+                f"steps={len(plan.steps)}, fallback='{plan.fallback_strategy[:60]}'"
+            )
+            if self.tracer:
+                self.tracer.add_step(
+                    "planning", "plan_ready",
+                    decision=f"{len(plan.steps)} steps: " +
+                             ", ".join(s.action for s in plan.steps[:4]),
+                )
+        else:
+            logger.info("[Agent] Planning unavailable, executing reactively")
+            if self.tracer:
+                self.tracer.add_step("planning", "skipped", decision="no_llm")
+
+        # ── Фаза 2: исполнение ───────────────────────────────────────────────
         from services.hh_client import search_vacancies
         results, metadata = await self._execute(criteria, search_vacancies)
 
         overall_reflection = ""
         if self.state.reflections:
             last = self.state.reflections[-1]
-            overall_reflection = f"Quality: {last.quality_assessment}. Strategy: {last.strategy_adjustment}. Searches: {self.state.total_searches}. New vacancies: {self.state.total_new_vacancies}."
+            overall_reflection = (
+                f"Quality: {last.quality_assessment}. "
+                f"Strategy: {last.strategy_adjustment}. "
+                f"Searches: {self.state.total_searches}. "
+                f"New vacancies: {self.state.total_new_vacancies}."
+            )
 
         await _save_to_memory(user_key, criteria, results, overall_reflection)
 
@@ -476,6 +503,16 @@ class VacancyAgent:
             "reflections_count": len(self.state.reflections),
             "total_searches": self.state.total_searches,
         }
+
+    def _advance_plan_step(self, action_taken: str):
+        """Сдвигаем текущий шаг плана вперёд, если выполненное действие совпадает с ожидаемым."""
+        if not self.state.plan:
+            return
+        steps = self.state.plan.steps
+        cur = self.state.current_step
+        if cur < len(steps) and steps[cur].action.lower().startswith(action_taken.lower()[:6]):
+            self.state.current_step = min(cur + 1, len(steps) - 1)
+            logger.debug(f"[Agent] Plan step advanced to {self.state.current_step}/{len(steps)}")
 
     def _generate_recommendation(self, score: int) -> str:
         if score >= 8:
@@ -532,7 +569,12 @@ class VacancyAgent:
 
         for iteration in range(max_iterations):
             self.state.iterations_used = iteration + 1
-            logger.info(f"[Agent] Iteration {iteration + 1}: {len(self.state.all_vacancies)} vacancies in pool")
+            logger.info(
+                f"[Agent] Iteration {iteration + 1}/{max_iterations}: "
+                f"pool={len(self.state.all_vacancies)}, "
+                f"searches={self.state.total_searches}, "
+                f"reflections={len(self.state.reflections)}"
+            )
 
             if self.tracer:
                 self.tracer.add_step(
@@ -540,14 +582,48 @@ class VacancyAgent:
                     decision=f"pool_size={len(self.state.all_vacancies)}",
                 )
 
-            messages = self.state.messages.copy()
-            prompt = _build_execution_prompt(
+            # ── Составляем рабочий контекст ───────────────────────────────────
+            base_prompt = _build_execution_prompt(
                 self.state.all_vacancies, criteria, iteration, self.state,
             )
+
+            # Скользящее окно: всегда первый user-промпт + последние AGENT_CONTEXT_WINDOW сообщений
             if iteration == 0:
-                messages = [{"role": "user", "content": prompt}]
+                messages = [{"role": "user", "content": base_prompt}]
             else:
-                messages.append({"role": "user", "content": prompt})
+                # Добавляем свежий промпт и обрезаем историю
+                self.state.messages.append({"role": "user", "content": base_prompt})
+                first_msg = self.state.messages[0]
+                tail = self.state.messages[1:]
+                if len(tail) > AGENT_CONTEXT_WINDOW:
+                    tail = tail[-AGENT_CONTEXT_WINDOW:]
+                messages = [first_msg] + tail
+
+            # ── Reflection gate ────────────────────────────────────────────────
+            gate_fires = (
+                REFLECTION_GATE_EVERY > 0
+                and self.state.total_searches > 0
+                and (self.state.total_searches - self.state.last_reflection_at) >= REFLECTION_GATE_EVERY
+                and not any(r.iteration == self.state.iterations_used for r in self.state.reflections)
+            )
+            if gate_fires:
+                logger.info(
+                    f"[Agent] Reflection gate fires after {self.state.total_searches} searches "
+                    f"(last reflect at {self.state.last_reflection_at})"
+                )
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "REFLECTION GATE: Ты уже выполнил несколько поисков. "
+                        "Прежде чем продолжить, ОБЯЗАТЕЛЬНО вызови reflect_and_adjust — "
+                        "оцени качество текущего пула и реши, нужен ли ещё поиск."
+                    ),
+                })
+                if self.tracer:
+                    self.tracer.add_reasoning(
+                        f"Reflection gate fired at iteration {iteration + 1}, "
+                        f"searches={self.state.total_searches}"
+                    )
 
             self.state.messages = messages
             response = await _call_llm(messages, EXECUTION_TOOLS)
@@ -556,26 +632,43 @@ class VacancyAgent:
                 logger.warning(f"[Agent] LLM unavailable on iteration {iteration + 1}")
                 consecutive_failures += 1
                 if consecutive_failures >= 2:
+                    logger.error("[Agent] 2 consecutive LLM failures, aborting")
                     break
                 continue
 
             consecutive_failures = 0
-            messages.append({"role": "assistant", "content": response.content, "tool_calls": response.tool_calls})
+            # Сохраняем assistant-ответ в историю
+            messages.append({
+                "role": "assistant",
+                "content": response.content,
+                "tool_calls": response.tool_calls,
+            })
 
+            # Ответ без tool calls — пробуем распарсить JSON или просим явный вызов
             if not response.tool_calls:
                 if response.content:
                     try:
                         text_data = json.loads(response.content)
                         if isinstance(text_data, dict) and "results" in text_data:
                             results = _parse_finalize_results(text_data, self.state.all_vacancies)
-                            return results, {"analysis_type": "llm", "overall_summary": str(text_data.get("overall_summary", ""))[:500]}
+                            return results, {
+                                "analysis_type": "llm",
+                                "overall_summary": str(text_data.get("overall_summary", ""))[:500],
+                            }
                     except json.JSONDecodeError:
                         pass
-                    logger.warning(f"[Agent] Text response without tools on iteration {iteration + 1}, requesting tool call")
-                    messages.append({"role": "user", "content": "Вызови инструмент: reflect_and_adjust или finalize_report."})
+                    logger.warning(
+                        f"[Agent] Text response without tool call on iteration {iteration + 1}, nudging"
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": "Вызови инструмент: reflect_and_adjust или finalize_report.",
+                    })
+                    self.state.messages = messages
                     continue
                 break
 
+            # ── Обрабатываем tool calls ────────────────────────────────────────
             for tool_call in response.tool_calls:
                 func_name = tool_call.function.name
                 try:
@@ -583,57 +676,94 @@ class VacancyAgent:
                 except json.JSONDecodeError:
                     args = {}
 
-                logger.info(f"[Agent] Tool call: {func_name}({json.dumps(args, ensure_ascii=False)[:200]})")
+                logger.info(
+                    f"[Agent] Tool call: {func_name}("
+                    f"{json.dumps(args, ensure_ascii=False)[:200]})"
+                )
 
                 if func_name == "search_vacancies":
                     tool_start = time.time()
                     result = await self._handle_search(args, hh_search)
                     tool_duration = int((time.time() - tool_start) * 1000)
                     if self.tracer:
-                        self.tracer.add_tool_call("search_vacancies", args, result[:200], tool_duration)
-                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+                        self.tracer.add_tool_call(
+                            "search_vacancies", args, result[:200], tool_duration
+                        )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    })
+                    # Сдвигаем шаг плана вперёд, если текущий шаг — search
+                    self._advance_plan_step("search")
 
                 elif func_name == "reflect_and_adjust":
                     tool_start = time.time()
                     result = self._handle_reflection(args)
                     tool_duration = int((time.time() - tool_start) * 1000)
                     if self.tracer:
-                        self.tracer.add_tool_call("reflect_and_adjust", args, result[:200], tool_duration)
-                    messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+                        self.tracer.add_tool_call(
+                            "reflect_and_adjust", args, result[:200], tool_duration
+                        )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    })
+                    self._advance_plan_step("reflect")
 
                     reflection = self.state.reflections[-1] if self.state.reflections else None
                     if reflection and not reflection.should_continue:
-                        logger.info("[Agent] Reflection says stop, finalizing")
-                        finalize_msg = {"role": "user", "content": "Рефлексия показала что данных достаточно. Вызови finalize_report с лучшими вакансиями из текущего пула."}
-                        messages.append(finalize_msg)
+                        logger.info("[Agent] Reflection says stop → requesting finalize")
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Рефлексия завершена: данных достаточно. "
+                                "Вызови finalize_report с лучшими вакансиями."
+                            ),
+                        })
                         self.state.messages = messages
-
                         final_response = await _call_llm(messages, EXECUTION_TOOLS)
                         if final_response and final_response.tool_calls:
                             for fc in final_response.tool_calls:
                                 if fc.function.name == "finalize_report":
                                     try:
                                         fa = json.loads(fc.function.arguments)
-                                        results = _parse_finalize_results(fa, self.state.all_vacancies)
-                                        return results, {"analysis_type": "llm", "overall_summary": str(fa.get("overall_summary", ""))[:500]}
+                                        results = _parse_finalize_results(
+                                            fa, self.state.all_vacancies
+                                        )
+                                        return results, {
+                                            "analysis_type": "llm",
+                                            "overall_summary": str(
+                                                fa.get("overall_summary", "")
+                                            )[:500],
+                                        }
                                     except json.JSONDecodeError:
                                         pass
                         break
 
                 elif func_name == "finalize_report":
                     if self.tracer:
-                        self.tracer.add_tool_call("finalize_report", args, f"results={len(args.get('results', []))}", 0)
+                        self.tracer.add_tool_call(
+                            "finalize_report", args,
+                            f"results={len(args.get('results', []))}", 0,
+                        )
                     results = _parse_finalize_results(args, self.state.all_vacancies)
                     overall_summary = str(args.get("overall_summary", ""))[:500]
-                    logger.info(f"[Agent] Finalized: {len(results)} results after {self.state.iterations_used} iterations, pool: {len(self.state.all_vacancies)}")
+                    logger.info(
+                        f"[Agent] Finalized: {len(results)} results after "
+                        f"{self.state.iterations_used} iterations, "
+                        f"pool: {len(self.state.all_vacancies)}"
+                    )
                     return results, {"analysis_type": "llm", "overall_summary": overall_summary}
-
-            if self.state.plan and self.state.current_step < len(self.state.plan.steps) - 1:
-                self.state.current_step += 1
 
             self.state.messages = messages
 
-        logger.warning("[Agent] Max iterations reached or LLM unavailable")
+        logger.warning(
+            f"[Agent] Loop ended: iterations={self.state.iterations_used}, "
+            f"pool={len(self.state.all_vacancies)}, "
+            f"consecutive_failures={consecutive_failures}"
+        )
         return [], {"analysis_type": "llm_max_iterations", "overall_summary": ""}
 
     async def _handle_search(self, args: dict, search_fn) -> str:
@@ -669,14 +799,30 @@ class VacancyAgent:
 
             self.state.total_searches += 1
             self.state.total_new_vacancies += added
-            logger.info(f"[Agent] Search: {len(new_vacancies)} found, {added} new. Pool: {len(self.state.all_vacancies)}")
+            logger.info(
+                f"[Agent] Search '{args.get('query', '')}': "
+                f"found={len(new_vacancies)}, new={added}, pool={len(self.state.all_vacancies)}"
+            )
+
+            if added == 0:
+                return (
+                    f"Поиск по запросу '{args.get('query', '')}' нашёл {len(new_vacancies)} вакансий, "
+                    f"но все они уже были в пуле (дубликаты). "
+                    f"Всего в пуле: {len(self.state.all_vacancies)}. "
+                    f"Попробуй другой запрос или другой регион, либо переходи к finalize_report."
+                )
 
             new_summaries = _build_vacancy_summaries(new_added[:10]) if new_added else []
             return (
-                f"Найдено {len(new_vacancies)} вакансий ({added} новых). Всего в пуле: {len(self.state.all_vacancies)}.\n"
+                f"Найдено {len(new_vacancies)} вакансий ({added} новых). "
+                f"Всего в пуле: {len(self.state.all_vacancies)}.\n"
                 f"Причина: {args.get('reason', 'не указана')}\n\n"
-                f"Данные новых вакансий:\n{json.dumps(new_summaries, ensure_ascii=False, indent=2)}"
+                f"Данные новых вакансий:\n"
+                f"{json.dumps(new_summaries, ensure_ascii=False, indent=2)}"
             )
+        except asyncio.TimeoutError:
+            logger.warning(f"[Agent] Search timed out for query '{args.get('query', '')}'")
+            return "Поиск превысил таймаут. Используй текущий пул или попробуй другой запрос."
         except Exception as e:
             logger.error(f"[Agent] Search failed: {e}")
             return f"Ошибка поиска: {type(e).__name__}. Используй текущий пул."

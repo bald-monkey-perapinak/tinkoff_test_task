@@ -57,8 +57,14 @@ ANALYSIS_MAX_VACANCIES = int(os.getenv("ANALYSIS_MAX_VACANCIES", "20"))
 
 LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2000"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
 
-AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "1"))
+AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
 AGENT_TRACE_ENABLED = os.getenv("AGENT_TRACE_ENABLED", "true").lower() == "true"
 AGENT_MEMORY_TTL_DAYS = int(os.getenv("AGENT_MEMORY_TTL_DAYS", "30"))
+# Принудительный reflection gate каждые N поисков (0 = отключён)
+REFLECTION_GATE_EVERY = int(os.getenv("REFLECTION_GATE_EVERY", "2"))
+# Общий таймаут агента в секундах
+AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "120"))
+# Скользящее окно сообщений: сколько последних assistant/tool-пар держать в контексте
+AGENT_CONTEXT_WINDOW = int(os.getenv("AGENT_CONTEXT_WINDOW", "8"))

@@ -10,159 +10,133 @@ import { VacancyList } from './components/VacancyList';
 import { AnalysisPanel } from './components/AnalysisPanel';
 import { FileUpload } from './components/FileUpload';
 import { SubscriptionsTab } from './components/SubscriptionsTab';
+import './App.css';
 
 type Tab = 'search' | 'analysis' | 'upload' | 'subs';
 
-const TAB_LABELS: Record<Tab, string> = {
-  search: 'Поиск',
-  analysis: 'AI-анализ',
-  upload: 'Загрузка',
-  subs: 'Уведомления',
-};
+const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'search',   label: 'Поиск',    icon: '🔍' },
+  { id: 'analysis', label: 'AI',       icon: '🤖' },
+  { id: 'upload',   label: 'Загрузка', icon: '📁' },
+  { id: 'subs',     label: 'Алерты',   icon: '🔔' },
+];
 
 const SCHEDULE_OPTIONS = [
-  { value: '', label: 'Любой формат' },
-  { value: 'remote', label: 'Удалёнка' },
-  { value: 'fullDay', label: 'Полный день' },
-  { value: 'flexible', label: 'Гибкий' },
+  { value: '',          label: 'Любой формат' },
+  { value: 'remote',    label: '🌐 Удалёнка' },
+  { value: 'fullDay',   label: '🏢 Офис' },
+  { value: 'flexible',  label: '⚡ Гибкий' },
 ];
 
 const EXPERIENCE_OPTIONS = [
-  { value: '', label: 'Любой опыт' },
+  { value: '',             label: 'Любой опыт' },
   { value: 'noExperience', label: 'Без опыта' },
   { value: 'between1And3', label: '1–3 года' },
   { value: 'between3And6', label: '3–6 лет' },
+  { value: 'moreThan6',    label: '6+ лет' },
 ];
 
+// ─── Theme / viewport ────────────────────────────────────────────────────────
+
 function applyTelegramTheme() {
-  const theme = WebApp.themeParams;
-  const root = document.documentElement;
-  if (theme.bg_color) root.style.setProperty('--paper', theme.bg_color);
-  if (theme.text_color) root.style.setProperty('--ink', theme.text_color);
-  if (theme.secondary_bg_color) root.style.setProperty('--paper-raised', theme.secondary_bg_color);
-  if (theme.hint_color) root.style.setProperty('--ink-soft', theme.hint_color);
+  const t = WebApp.themeParams;
+  const r = document.documentElement;
+  const isDark = t.bg_color
+    ? parseInt(t.bg_color.replace('#', ''), 16) < 0x888888
+    : true;
+
+  r.setAttribute('data-theme', isDark ? 'dark' : 'light');
+
+  if (t.bg_color)            r.style.setProperty('--tg-bg',   t.bg_color);
+  if (t.text_color)          r.style.setProperty('--tg-text', t.text_color);
+  if (t.hint_color)          r.style.setProperty('--tg-hint', t.hint_color);
+  if (t.secondary_bg_color)  r.style.setProperty('--tg-s2',   t.secondary_bg_color);
 }
 
 function applyTelegramViewport() {
-  const root = document.documentElement;
-  root.style.setProperty('--tg-viewport-height', `${WebApp.viewportHeight}px`);
-  root.style.setProperty('--tg-viewport-stable-height', `${WebApp.viewportStableHeight}px`);
-  root.style.setProperty('--tg-safe-area-inset-top', `${WebApp.safeAreaInset?.top ?? 0}px`);
-  root.style.setProperty('--tg-safe-area-inset-bottom', `${WebApp.safeAreaInset?.bottom ?? 0}px`);
+  const r = document.documentElement;
+  r.style.setProperty('--tg-viewport-height',        `${WebApp.viewportHeight}px`);
+  r.style.setProperty('--tg-viewport-stable-height', `${WebApp.viewportStableHeight}px`);
+  r.style.setProperty('--tg-safe-area-inset-top',    `${(WebApp.safeAreaInset as any)?.top ?? 0}px`);
+  r.style.setProperty('--tg-safe-area-inset-bottom', `${(WebApp.safeAreaInset as any)?.bottom ?? 0}px`);
 }
+
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+
+const K_FILTERS  = 'va_filters';
+const K_SESSION  = 'va_session';
+const K_VACANCIES = 'va_vacancies';
+
+function ls<T>(key: string, fallback: T): T {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+function lsSet(key: string, val: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+}
+
+// ─── Toaster ─────────────────────────────────────────────────────────────────
 
 function showError(msg: string) {
-  try {
-    WebApp.showAlert(msg);
-  } catch {
-    console.error(msg);
-  }
+  try { WebApp.showAlert(msg); } catch { console.error(msg); }
 }
 
-const STORAGE_KEY = 'vacancy_agent_filters';
-const VACANCIES_KEY = 'vacancy_agent_vacancies';
-const SESSION_KEY = 'vacancy_agent_session';
-
-function loadFilters() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return null;
-}
-
-function saveFilters(filters: Record<string, unknown>) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(filters));
-  } catch {}
-}
-
-function loadVacancies(): Vacancy[] {
-  try {
-    const raw = localStorage.getItem(VACANCIES_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
-}
-
-function saveVacancies(v: Vacancy[]) {
-  try {
-    localStorage.setItem(VACANCIES_KEY, JSON.stringify(v));
-  } catch {}
-}
-
-function loadSessionId(): string | null {
-  try {
-    return localStorage.getItem(SESSION_KEY);
-  } catch {}
-  return null;
-}
-
-function saveSessionId(id: string) {
-  try {
-    localStorage.setItem(SESSION_KEY, id);
-  } catch {}
-}
+// ─── App ─────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const saved = loadFilters();
+  const saved = ls<Record<string, unknown>>(K_FILTERS, {});
+
+  // Filters
+  const [query,      setQuery]      = useState<string>(saved.query as string ?? '');
+  const [area,       setArea]       = useState<string>(saved.area as string ?? '');
+  const [areaName,   setAreaName]   = useState<string>(saved.areaName as string ?? '');
+  const [salaryFrom, setSalaryFrom] = useState<string>(saved.salaryFrom as string ?? '');
+  const [schedule,   setSchedule]   = useState<string>(saved.schedule as string ?? '');
+  const [experience, setExperience] = useState<string>(saved.experience as string ?? '');
+  const [remoteOnly, setRemoteOnly] = useState<boolean>(saved.remoteOnly as boolean ?? false);
+  const [dateFrom,   setDateFrom]   = useState<string>(saved.dateFrom as string ?? '');
+
+  // Data
+  const [vacancies,  setVacancies]  = useState<Vacancy[]>(() => ls(K_VACANCIES, []));
+  const [total,      setTotal]      = useState(0);
+  const [results,    setResults]    = useState<AnalysisResult[]>([]);
+  const [report,     setReport]     = useState('');
+  const [favorites,  setFavorites]  = useState<Set<string>>(new Set());
+  const [favList,    setFavList]    = useState<Favorite[]>([]);
+  const [areaSugs,   setAreaSugs]   = useState<Area[]>([]);
+  const [page,       setPage]       = useState(0);
+  const [hasMore,    setHasMore]    = useState(false);
+
+  // Loading flags
+  const [searching,  setSearching]  = useState(false);
+  const [analyzing,  setAnalyzing]  = useState(false);
+  const [uploading,  setUploading]  = useState(false);
+  const [loadingMore,setLoadingMore]= useState(false);
+
+  // UI
   const [tab, setTab] = useState<Tab>('search');
-  const [query, setQuery] = useState(saved?.query ?? '');
-  const [area, setArea] = useState(saved?.area ?? '');
-  const [areaName, setAreaName] = useState(saved?.areaName ?? '');
-  const [salaryFrom, setSalaryFrom] = useState(saved?.salaryFrom ?? '');
-  const [schedule, setSchedule] = useState(saved?.schedule ?? '');
-  const [experience, setExperience] = useState(saved?.experience ?? '');
-  const [remoteOnly, setRemoteOnly] = useState(saved?.remoteOnly ?? false);
-  const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? '');
 
-  const [vacancies, setVacancies] = useState<Vacancy[]>(loadVacancies);
-  const [total, setTotal] = useState(0);
-  const [results, setResults] = useState<AnalysisResult[]>([]);
-  const [report, setReport] = useState('');
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
-  const [favList, setFavList] = useState<Favorite[]>([]);
+  const sessionRef = useRef<string | null>(ls(K_SESSION, null));
+  const abortRef   = useRef<AbortController | null>(null);
 
-  const [searching, setSearching] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [areaSuggestions, setAreaSuggestions] = useState<Area[]>([]);
-  const [page, setPage] = useState(0);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-
-  const sessionIdRef = useRef<string | null>(loadSessionId());
-  const abortRef = useRef<AbortController | null>(null);
-
+  // Persist filters
   useEffect(() => {
-    saveFilters({ query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom });
+    lsSet(K_FILTERS, { query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom });
   }, [query, area, areaName, salaryFrom, schedule, experience, remoteOnly, dateFrom]);
 
-  useEffect(() => {
-    saveVacancies(vacancies);
-  }, [vacancies]);
+  useEffect(() => { lsSet(K_VACANCIES, vacancies); }, [vacancies]);
+  useEffect(() => { if (sessionRef.current) lsSet(K_SESSION, sessionRef.current); });
 
-  useEffect(() => {
-    const sid = sessionIdRef.current;
-    if (sid) saveSessionId(sid);
-  });
-
+  // Init Telegram
   useEffect(() => {
     WebApp.ready();
     WebApp.expand();
     applyTelegramTheme();
     applyTelegramViewport();
-
     WebApp.onEvent('themeChanged', applyTelegramTheme);
     WebApp.onEvent('viewportChanged', applyTelegramViewport);
-
     loadFavorites();
-
-    const savedVacancies = loadVacancies();
-    if (savedVacancies.length > 0) {
-      setTotal(savedVacancies.length);
-    }
-
+    if (vacancies.length) setTotal(vacancies.length);
     return () => {
       WebApp.offEvent('themeChanged', applyTelegramTheme);
       WebApp.offEvent('viewportChanged', applyTelegramViewport);
@@ -170,46 +144,20 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    WebApp.MainButton.hide();
-    WebApp.BackButton.hide();
-
-    if (tab === 'analysis' && results.length > 0) {
-      WebApp.BackButton.show();
-      WebApp.BackButton.onClick(() => setTab('search'));
-    }
-
-    if (tab === 'upload') {
-      WebApp.MainButton.setText('Загрузить файл');
-      WebApp.MainButton.show();
-      WebApp.MainButton.onClick(() => {
-        const input = document.querySelector<HTMLInputElement>('input[type="file"]');
-        input?.click();
-      });
-    }
-
-    return () => {
-      WebApp.MainButton.offClick(() => {});
-      WebApp.BackButton.offClick(() => {});
-    };
-  }, [tab, results]);
+  // ── Actions ────────────────────────────────────────────────────────────────
 
   async function loadFavorites() {
     try {
       const data = await getFavorites();
       setFavList(data.favorites);
-      setFavorites(new Set(data.favorites.map((f) => f.vacancy_id)));
-    } catch (err) {
-      console.warn('Failed to load favorites:', err);
-    }
+      setFavorites(new Set(data.favorites.map(f => f.vacancy_id)));
+    } catch {}
   }
 
   const handleSearch = useCallback(async () => {
     if (searching) return;
     abortRef.current?.abort();
     abortRef.current = new AbortController();
-
-    WebApp.MainButton.showProgress();
     setSearching(true);
     setResults([]);
     setReport('');
@@ -226,42 +174,34 @@ export default function App() {
       setVacancies(data.vacancies);
       setTotal(data.total);
       setHasMore(data.vacancies.length < data.total);
-      WebApp.HapticFeedback.notificationOccurred('success');
+      try { WebApp.HapticFeedback.notificationOccurred('success'); } catch {}
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
-      showError(`Ошибка поиска: ${msg}`);
-      WebApp.HapticFeedback.notificationOccurred('error');
+      showError(`Ошибка поиска: ${err instanceof Error ? err.message : 'Неизвестная ошибка'}`);
+      try { WebApp.HapticFeedback.notificationOccurred('error'); } catch {}
     }
     setSearching(false);
-    WebApp.MainButton.hideProgress();
   }, [query, area, salaryFrom, schedule, experience, searching]);
 
   const handleAreaSearch = useCallback(async (q: string) => {
     setAreaName(q);
-    if (q.length < 2) {
-      setAreaSuggestions([]);
-      return;
-    }
+    if (!q) { setArea(''); }
+    if (q.length < 2) { setAreaSugs([]); return; }
     try {
       const data = await searchAreas(q);
-      setAreaSuggestions(data.areas);
-    } catch {
-      setAreaSuggestions([]);
-    }
+      setAreaSugs(data.areas);
+    } catch { setAreaSugs([]); }
   }, []);
 
   const handleSelectArea = (a: Area) => {
     setArea(a.id);
     setAreaName(a.name);
-    setAreaSuggestions([]);
-    WebApp.HapticFeedback.impactOccurred('light');
+    setAreaSugs([]);
+    try { WebApp.HapticFeedback.impactOccurred('light'); } catch {}
   };
 
   const handleAnalyze = useCallback(async () => {
     if (analyzing) return;
-    WebApp.MainButton.showProgress();
     setAnalyzing(true);
-    WebApp.MainButton.setText('AI анализирует...');
     const criteria: Criteria = {
       direction: query,
       city: areaName,
@@ -275,154 +215,155 @@ export default function App() {
       const data = await analyzeVacancies(criteria);
       setResults(data.results);
       setReport(data.report);
-      WebApp.HapticFeedback.notificationOccurred('success');
+      try { WebApp.HapticFeedback.notificationOccurred('success'); } catch {}
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
-      showError(`Ошибка AI-анализа: ${msg}`);
-      WebApp.HapticFeedback.notificationOccurred('error');
+      showError(`Ошибка AI-анализа: ${err instanceof Error ? err.message : ''}`);
     }
     setAnalyzing(false);
-    WebApp.MainButton.hideProgress();
-    WebApp.MainButton.setText('AI-проанализировать');
   }, [query, areaName, remoteOnly, salaryFrom, experience, dateFrom, analyzing]);
 
   const handleUpload = useCallback(async (file: File) => {
     if (uploading) return;
     setUploading(true);
-    WebApp.MainButton.showProgress();
     try {
       const data = await uploadFile(file);
-      sessionIdRef.current = data.session_id;
+      sessionRef.current = data.session_id;
       setVacancies(data.vacancies);
       setTotal(data.loaded);
-      WebApp.HapticFeedback.notificationOccurred('success');
-      WebApp.showAlert(`Загружено ${data.loaded} вакансий`);
+      try {
+        WebApp.HapticFeedback.notificationOccurred('success');
+        WebApp.showAlert(`Загружено ${data.loaded} вакансий`);
+      } catch {}
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
-      showError(`Ошибка загрузки: ${msg}`);
-      WebApp.HapticFeedback.notificationOccurred('error');
+      showError(`Ошибка загрузки: ${err instanceof Error ? err.message : ''}`);
     }
     setUploading(false);
-    WebApp.MainButton.hideProgress();
   }, [uploading]);
 
   const toggleFavorite = useCallback(async (v: Vacancy) => {
     const isFav = favorites.has(v.id);
     try {
-      if (isFav) {
-        await removeFavorite(v.id);
-      } else {
-        await addFavorite({ vacancy_id: v.id, title: v.title, company: v.company, url: v.url });
-      }
+      if (isFav) await removeFavorite(v.id);
+      else await addFavorite({ vacancy_id: v.id, title: v.title, company: v.company, url: v.url });
       await loadFavorites();
-      WebApp.HapticFeedback.impactOccurred('medium');
-    } catch (err) {
-      showError('Не удалось обновить избранное');
-    }
+      try { WebApp.HapticFeedback.impactOccurred('medium'); } catch {}
+    } catch { showError('Не удалось обновить избранное'); }
   }, [favorites]);
-
-  const handleDownloadReport = () => {
-    const blob = new Blob([report], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'vacancy-report.md';
-    a.click();
-    URL.revokeObjectURL(url);
-    WebApp.HapticFeedback.impactOccurred('light');
-  };
 
   const handleLoadMore = useCallback(async () => {
     if (loadingMore) return;
     setLoadingMore(true);
     try {
-      const nextPage = page + 1;
+      const np = page + 1;
       const data = await searchVacancies({
-        query,
-        area: area || undefined,
+        query, area: area || undefined,
         salary_from: salaryFrom ? parseInt(salaryFrom) : undefined,
         schedule: schedule || undefined,
         experience: experience || undefined,
-        page: nextPage,
-        per_page: 20,
+        page: np, per_page: 20,
       });
-      setVacancies((prev) => [...prev, ...data.vacancies]);
-      setPage(nextPage);
+      setVacancies(prev => [...prev, ...data.vacancies]);
+      setPage(np);
       setHasMore((vacancies.length + data.vacancies.length) < data.total);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
-      showError(`Ошибка загрузки: ${msg}`);
+      showError(`Ошибка: ${err instanceof Error ? err.message : ''}`);
     }
     setLoadingMore(false);
   }, [query, area, salaryFrom, schedule, experience, page, loadingMore, vacancies.length]);
 
-  const handleExport = useCallback(async (format: 'json' | 'csv') => {
+  const handleDownloadReport = () => {
+    const blob = new Blob([report], { type: 'text/markdown' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = 'vacancy-report.md'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExport = useCallback(async (fmt: 'json' | 'csv') => {
     try {
-      const blob = await exportVacancies(format);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `vacancy-export.${format}`;
-      a.click();
+      const blob = await exportVacancies(fmt);
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = `vacancies.${fmt}`; a.click();
       URL.revokeObjectURL(url);
-      WebApp.HapticFeedback.impactOccurred('light');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
-      showError(`Ошибка экспорта: ${msg}`);
+      showError(`Ошибка экспорта: ${err instanceof Error ? err.message : ''}`);
     }
   }, []);
 
-  const openVacancyUrl = (url: string) => {
-    if (url) {
-      WebApp.openLink(url);
-    }
+  const openUrl = (url: string) => { try { WebApp.openLink(url); } catch { window.open(url, '_blank'); }};
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  const currentFilters = {
+    query, area: areaName,
+    schedule,
+    min_salary: salaryFrom ? parseInt(salaryFrom) : null,
   };
 
-  const currentFilters = { query, area: areaName, schedule, min_salary: salaryFrom ? parseInt(salaryFrom) : null };
-
   return (
-    <div className="app" style={{ paddingTop: 'var(--tg-safe-area-inset-top)' }}>
-      <div className="masthead">
-        <div className="masthead-eyebrow">
-          {favList.length > 0 ? `${favList.length} в избранном` : 'Карьерный агент'}
+    <div className="app">
+      {/* Header */}
+      <div className="header">
+        <div className="header-icon">✦</div>
+        <div className="header-text">
+          <div className="header-title">Карьерный агент</div>
+          <div className="header-sub">
+            {favList.length > 0
+              ? `${favList.length} в избранном · ${vacancies.length} вакансий`
+              : vacancies.length > 0
+                ? `${vacancies.length} вакансий загружено`
+                : 'AI-поиск на hh.ru'}
+          </div>
         </div>
-        <div className="masthead-title">Поиск вакансий</div>
       </div>
 
+      {/* Tabs */}
       <div className="tabs">
-        {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
-          <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-            {TAB_LABELS[t]}
-          </button>
-        ))}
+        <div className="tabs-inner">
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              className={`tab${tab === t.id ? ' active' : ''}`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {tab === 'search' && (
-        <>
-          <div className="search-form">
-            <div>
-              <span className="field-label">Должность</span>
+      {/* Content */}
+      <div className="content">
+
+        {/* ── Search tab ──────────────────────────────────────────────── */}
+        {tab === 'search' && (
+          <div className="section-gap">
+            {/* Query */}
+            <div className="form-group">
+              <label className="form-label">Должность</label>
               <input
-                className="input"
-                placeholder="например, «junior python developer»"
+                className="form-input"
+                placeholder="Junior Python Developer"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSearch()}
                 maxLength={200}
               />
             </div>
-            <div style={{ position: 'relative' }}>
-              <span className="field-label">Город</span>
+
+            {/* City */}
+            <div className="form-group autocomplete-wrap">
+              <label className="form-label">Город</label>
               <input
-                className="input"
+                className="form-input"
                 placeholder="Любой город"
                 value={areaName}
-                onChange={(e) => handleAreaSearch(e.target.value)}
+                onChange={e => handleAreaSearch(e.target.value)}
                 maxLength={100}
               />
-              {areaSuggestions.length > 0 && (
+              {areaSugs.length > 0 && (
                 <div className="autocomplete-pop">
-                  {areaSuggestions.map((a) => (
+                  {areaSugs.map(a => (
                     <div key={a.id} className="autocomplete-item" onClick={() => handleSelectArea(a)}>
                       {a.name}
                     </div>
@@ -430,124 +371,174 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className="filters-row">
-              <div>
-                <span className="field-label">Зарплата от</span>
+
+            {/* Salary + Schedule grid */}
+            <div className="form-grid">
+              <div className="form-group">
+                <label className="form-label">Зарплата от, ₽</label>
                 <input
-                  className="input"
+                  className="form-input"
                   type="number"
                   placeholder="0"
                   value={salaryFrom}
-                  onChange={(e) => setSalaryFrom(e.target.value)}
+                  onChange={e => setSalaryFrom(e.target.value)}
                   min={0}
-                  max={10000000}
                 />
               </div>
-              <div>
-                <span className="field-label">Формат</span>
-                <select className="select" value={schedule} onChange={(e) => setSchedule(e.target.value)}>
-                  {SCHEDULE_OPTIONS.map((o) => (
+              <div className="form-group">
+                <label className="form-label">Опыт</label>
+                <select
+                  className="form-select"
+                  value={experience}
+                  onChange={e => setExperience(e.target.value)}
+                >
+                  {EXPERIENCE_OPTIONS.map(o => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
               </div>
             </div>
-            <div className="filters-row" style={{ alignItems: 'end' }}>
-              <div>
-                <span className="field-label">Опыт</span>
-                <select className="select" value={experience} onChange={(e) => setExperience(e.target.value)}>
-                  {EXPERIENCE_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
+
+            {/* Schedule pills */}
+            <div className="form-group">
+              <label className="form-label">Формат работы</label>
+              <div className="filter-pills">
+                {SCHEDULE_OPTIONS.map(o => (
+                  <button
+                    key={o.value}
+                    className={`filter-pill${schedule === o.value ? ' active' : ''}`}
+                    onClick={() => setSchedule(o.value)}
+                  >
+                    {o.label}
+                  </button>
+                ))}
               </div>
-              <label className="checkbox-row" style={{ paddingBottom: 12 }}>
-                <input type="checkbox" checked={remoteOnly} onChange={(e) => setRemoteOnly(e.target.checked)} />
-                Только удалёнка
+            </div>
+
+            {/* Remote toggle + date */}
+            <div className="form-grid">
+              <label className="toggle-row">
+                <span className="toggle-label">Только удалёнка</span>
+                <span className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={remoteOnly}
+                    onChange={e => setRemoteOnly(e.target.checked)}
+                  />
+                  <span className="toggle-track" />
+                </span>
               </label>
-            </div>
-            <div>
-              <span className="field-label">Дата публикации от</span>
-              <input
-                className="input"
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </div>
-            <button className="btn btn-primary" onClick={handleSearch} disabled={searching}>
-              {searching ? 'Поиск...' : 'Найти вакансии'}
-            </button>
-          </div>
-          {total > 0 && (
-            <div className="total-badge" style={{ marginTop: 16 }}>
-              Найдено: {total} · показаны первые {vacancies.length}
-            </div>
-          )}
-          <VacancyList
-            vacancies={vacancies}
-            favorites={favorites}
-            onToggleFavorite={toggleFavorite}
-            onOpenUrl={openVacancyUrl}
-          />
-          {hasMore && (
-            <button
-              className="btn btn-outline"
-              onClick={handleLoadMore}
-              disabled={loadingMore}
-              style={{ width: '100%', marginTop: 4 }}
-            >
-              {loadingMore ? 'Загрузка...' : 'Загрузить ещё'}
-            </button>
-          )}
-        </>
-      )}
-
-      {tab === 'analysis' && (
-        <>
-          <button className="btn btn-primary" onClick={handleAnalyze} disabled={analyzing} style={{ width: '100%', marginBottom: 16 }}>
-            {analyzing ? 'AI анализирует...' : 'AI-проанализировать вакансии'}
-          </button>
-          <AnalysisPanel results={results} onOpenUrl={openVacancyUrl} />
-          {report && (
-            <>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button className="btn btn-outline btn-sm" onClick={handleDownloadReport} style={{ flex: 1 }}>
-                  .md
-                </button>
-                <button className="btn btn-outline btn-sm" onClick={() => handleExport('csv')} style={{ flex: 1 }}>
-                  .csv
-                </button>
-                <button className="btn btn-outline btn-sm" onClick={() => handleExport('json')} style={{ flex: 1 }}>
-                  .json
-                </button>
+              <div className="form-group">
+                <label className="form-label">Дата от</label>
+                <input
+                  className="form-input"
+                  type="date"
+                  value={dateFrom}
+                  onChange={e => setDateFrom(e.target.value)}
+                />
               </div>
-              <div className="report-view">{report}</div>
-            </>
-          )}
-        </>
-      )}
+            </div>
 
-      {tab === 'upload' && (
-        <>
-          <FileUpload onFileSelect={handleUpload} isLoading={uploading} />
-          {vacancies.length > 0 && (
-            <>
-              <div className="total-badge" style={{ marginTop: 16 }}>Загружено: {vacancies.length} вакансий</div>
-              <VacancyList
-                vacancies={vacancies}
-                favorites={favorites}
-                onToggleFavorite={toggleFavorite}
-                onOpenUrl={openVacancyUrl}
-              />
-            </>
-          )}
-        </>
-      )}
+            {/* Search button */}
+            <button className="btn btn-primary" onClick={handleSearch} disabled={searching}>
+              {searching ? (
+                <><span className="spinner" /> Ищу вакансии…</>
+              ) : '🔍 Найти вакансии'}
+            </button>
 
-      {tab === 'subs' && (
-        <SubscriptionsTab currentFilters={currentFilters} />
-      )}
+            {/* Results */}
+            {total > 0 && (
+              <div className="count-badge">
+                Найдено <strong>{total}</strong> · показано {vacancies.length}
+              </div>
+            )}
+
+            <VacancyList
+              vacancies={vacancies}
+              favorites={favorites}
+              onToggleFavorite={toggleFavorite}
+              onOpenUrl={openUrl}
+              loading={searching}
+            />
+
+            {hasMore && (
+              <button
+                className="btn btn-ghost"
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+              >
+                {loadingMore ? <><span className="spinner spinner-accent" /> Загружаю…</> : 'Загрузить ещё'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* ── Analysis tab ─────────────────────────────────────────────── */}
+        {tab === 'analysis' && (
+          <div className="section-gap">
+            <button
+              className="btn btn-primary"
+              onClick={handleAnalyze}
+              disabled={analyzing || vacancies.length === 0}
+            >
+              {analyzing
+                ? <><span className="spinner" /> AI анализирует вакансии…</>
+                : vacancies.length === 0
+                  ? 'Сначала найдите вакансии'
+                  : `✦ Запустить AI-анализ (${vacancies.length} вакансий)`}
+            </button>
+
+            <AnalysisPanel
+              results={results}
+              onOpenUrl={openUrl}
+              loading={analyzing}
+            />
+
+            {report && (
+              <>
+                <div className="divider" />
+                <div className="export-row">
+                  <button className="btn btn-ghost btn-sm" style={{ flex: 1 }} onClick={handleDownloadReport}>
+                    ↓ .md
+                  </button>
+                  <button className="btn btn-ghost btn-sm" style={{ flex: 1 }} onClick={() => handleExport('csv')}>
+                    ↓ .csv
+                  </button>
+                  <button className="btn btn-ghost btn-sm" style={{ flex: 1 }} onClick={() => handleExport('json')}>
+                    ↓ .json
+                  </button>
+                </div>
+                <div className="report-view">{report}</div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Upload tab ───────────────────────────────────────────────── */}
+        {tab === 'upload' && (
+          <div className="section-gap">
+            <FileUpload onFileSelect={handleUpload} isLoading={uploading} />
+            {vacancies.length > 0 && (
+              <>
+                <div className="count-badge">
+                  Загружено: <strong>{vacancies.length}</strong> вакансий
+                </div>
+                <VacancyList
+                  vacancies={vacancies}
+                  favorites={favorites}
+                  onToggleFavorite={toggleFavorite}
+                  onOpenUrl={openUrl}
+                />
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Subscriptions tab ────────────────────────────────────────── */}
+        {tab === 'subs' && (
+          <SubscriptionsTab currentFilters={currentFilters} />
+        )}
+      </div>
     </div>
   );
 }

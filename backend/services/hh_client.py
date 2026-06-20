@@ -1,12 +1,13 @@
-import json
-import httpx
 import asyncio
+import json
 import logging
 import random
 from typing import Optional
-from config import HH_API_BASE, HH_USER_AGENT, HH_PROXY, HH_PROXY_LIST, DATA_DIR, MAX_RETRIES, BASE_DELAY
-from models import Vacancy, SearchParams
+
+import httpx
 from circuit_breaker import hh_breaker
+from config import BASE_DELAY, DATA_DIR, HH_API_BASE, HH_PROXY, HH_PROXY_LIST, HH_USER_AGENT, MAX_RETRIES
+from models import SearchParams, Vacancy
 
 logger = logging.getLogger(__name__)
 
@@ -271,3 +272,10 @@ async def get_role_suggestions(query: str) -> list[dict]:
         if q_lower in role_name.lower():
             results.append({"id": role_id, "name": role_name})
     return results[:10]
+
+
+async def close_clients():
+    global _shared_client
+    if _shared_client:
+        await _shared_client.aclose()
+        _shared_client = None

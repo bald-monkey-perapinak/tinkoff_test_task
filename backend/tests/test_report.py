@@ -1,6 +1,5 @@
-import pytest
 
-from models import Vacancy, AnalysisResult
+from models import AnalysisResult, Vacancy
 from services.report import generate_report
 
 

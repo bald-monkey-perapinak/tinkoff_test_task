@@ -1,9 +1,10 @@
-import httpx
 import asyncio
 import logging
 import random
-from config import TELEGRAM_BOT_TOKEN, MAX_RETRIES, BASE_DELAY
-from models import Subscription, Vacancy
+
+import httpx
+from config import BASE_DELAY, MAX_RETRIES, TELEGRAM_BOT_TOKEN
+from models import Vacancy
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ async def send_telegram_message(chat_id: int, text: str, reply_markup: dict = No
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
@@ -37,6 +38,10 @@ async def send_telegram_message(chat_id: int, text: str, reply_markup: dict = No
                 logger.warning(f"Telegram rate limited, waiting {retry_after}s")
                 await asyncio.sleep(retry_after)
                 continue
+            elif resp.status_code in (502, 503, 504):
+                delay = BASE_DELAY * (2 ** attempt) + random.uniform(0, BASE_DELAY * 0.3)
+                logger.warning(f"Telegram server error {resp.status_code}, attempt {attempt + 1}, retrying in {delay:.1f}s")
+                await asyncio.sleep(delay)
             else:
                 logger.error(f"Telegram API error: status={resp.status_code}")
                 return False
@@ -52,16 +57,22 @@ async def send_telegram_message(chat_id: int, text: str, reply_markup: dict = No
     return False
 
 
+def _escape_html(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def format_vacancy_notification(v: Vacancy) -> str:
     salary = v.salary or "не указана"
-    url_part = f"🔗 [Открыть]({v.url})" if v.url else ""
+    url_part = f'🔗 <a href="{v.url}">Открыть</a>' if v.url else ""
     return (
-        f"🆕 *Новая вакансия!*\n\n"
-        f"*{v.title}*\n"
-        f"🏢 {v.company}\n"
-        f"📍 {v.city}\n"
-        f"💰 {salary}\n"
-        f"📅 {v.schedule}\n"
+        f"🆕 <b>Новая вакансия!</b>\n\n"
+        f"<b>{_escape_html(v.title)}</b>\n"
+        f"🏢 {_escape_html(v.company)}\n"
+        f"📍 {_escape_html(v.city)}\n"
+        f"💰 {_escape_html(salary)}\n"
+        f"📅 {_escape_html(v.schedule)}\n"
         f"{url_part}"
     )
 
@@ -80,3 +91,10 @@ async def notify_new_vacancies(chat_id: int, vacancies: list[Vacancy]) -> int:
             count += 1
         await asyncio.sleep(0.5)
     return count
+
+
+async def close_clients():
+    global _shared_client
+    if _shared_client:
+        await _shared_client.aclose()
+        _shared_client = None

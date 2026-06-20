@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -50,7 +49,7 @@ RATE_LIMITS = {
 PROMPT_INPUT_MAX_LEN = 500
 
 NOTIFICATION_INTERVAL = 300
-MAX_SESSION_PAYLOAD_BYTES = 2 * 1024 * 1024
+MAX_SESSION_PAYLOAD_BYTES = MAX_UPLOAD_SIZE + 1024 * 1024  # slightly larger than upload limit to account for JSON overhead
 ANALYSIS_CACHE_TTL = 3600
 MAX_RETRIES = 3
 BASE_DELAY = 1.0
@@ -58,3 +57,8 @@ BASE_DELAY = 1.0
 LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2000"))
+
+AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
+AGENT_TRACE_ENABLED = os.getenv("AGENT_TRACE_ENABLED", "true").lower() == "true"
+AGENT_MEMORY_TTL_DAYS = int(os.getenv("AGENT_MEMORY_TTL_DAYS", "30"))
+AGENT_USE_ORCHESTRATOR = os.getenv("AGENT_USE_ORCHESTRATOR", "true").lower() == "true"

@@ -1,10 +1,11 @@
-import hmac
 import hashlib
-import time
+import hmac
 import logging
+import time
 from urllib.parse import parse_qsl
-from fastapi import Request, HTTPException
+
 from config import TELEGRAM_BOT_TOKEN
+from fastapi import HTTPException, Request
 
 logger = logging.getLogger(__name__)
 

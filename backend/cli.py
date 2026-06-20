@@ -1,13 +1,13 @@
 import argparse
 import asyncio
+import logging
 import pathlib
 import sys
 
 from models import CriteriaInput
-from services.parser import parse_uploaded_file
 from services.analyzer import analyze_with_llm
+from services.parser import parse_uploaded_file
 from services.report import generate_report
-
 
 CRITERIA_FIELDS = {
     "направление": "direction",
@@ -21,8 +21,10 @@ CRITERIA_FIELDS = {
 
 
 def parse_criteria_file(path: str) -> CriteriaInput:
-    text = pathlib.Path(path).read_text(encoding="utf-8")
+    raw = pathlib.Path(path).read_bytes()
+    text = raw.decode("utf-8", errors="replace").replace("\x00", "")
     data: dict = {}
+    _logger = logging.getLogger(__name__)
     for line in text.splitlines():
         line = line.strip().lstrip("- ").strip()
         if ":" not in line:
@@ -31,6 +33,7 @@ def parse_criteria_file(path: str) -> CriteriaInput:
         key = key.strip().lower()
         value = value.strip()
         if key not in CRITERIA_FIELDS:
+            _logger.warning(f"Unrecognized criteria field '{key}' — ignored. Valid fields: {', '.join(CRITERIA_FIELDS.keys())}")
             continue
         field = CRITERIA_FIELDS[key]
         if field == "remote_only":
@@ -48,7 +51,7 @@ def parse_criteria_file(path: str) -> CriteriaInput:
 
 
 def interactive_criteria() -> CriteriaInput:
-    print("\n--- Введите критерии поиска (оставьте пустым для пропуска) ---\n")
+    print("\n--- Введите критерии поиска (оставьте пустым для пропуска) ---\n", file=sys.stderr)
     direction = input("  Направление (например, Python): ").strip()
     city = input("  Город: ").strip()
     remote_raw = input("  Только удалёнка (да/нет): ").strip().lower()
@@ -80,7 +83,7 @@ def build_criteria_text(criteria: CriteriaInput) -> str:
     return "\n".join(filter(None, [
         f"- Направление: {criteria.direction}" if criteria.direction else None,
         f"- Город: {criteria.city}" if criteria.city else None,
-        f"- Только удалёнка: да" if criteria.remote_only else None,
+        "- Только удалёнка: да" if criteria.remote_only else None,
         f"- Минимальная зарплата: {criteria.min_salary}" if criteria.min_salary else None,
         f"- Уровень: {criteria.experience_level}" if criteria.experience_level else None,
         f"- Навыки: {', '.join(criteria.key_skills)}" if criteria.key_skills else None,
@@ -88,27 +91,57 @@ def build_criteria_text(criteria: CriteriaInput) -> str:
     ]))
 
 
-async def run_pipeline(file_path: str, criteria: CriteriaInput, output_path: str):
-    print(f"\n[1/3] Чтение вакансий из {file_path}...")
-    content = pathlib.Path(file_path).read_text(encoding="utf-8")
-    vacancies = parse_uploaded_file(file_path, content)
-    print(f"  Загружено: {len(vacancies)} вакансий")
-    if not vacancies:
-        print("  Ошибка: вакансии не найдены или неверный формат файла")
-        sys.exit(1)
+async def run_pipeline(file_path: str, criteria: CriteriaInput, output_path: str) -> int:
+    logger = logging.getLogger("cli")
 
-    print(f"\n[2/3] Анализ через LLM...")
-    results = await analyze_with_llm(vacancies[:20], criteria)
-    print(f"  Проанализировано: {len(results)} вакансий")
+    logger.info(f"[1/3] Чтение вакансий из {file_path}")
+    try:
+        raw = pathlib.Path(file_path).read_bytes()
+    except OSError as e:
+        logger.error(f"Не удалось прочитать файл {file_path}: {e}")
+        report = generate_report([], [], criteria_text=build_criteria_text(criteria), overall_summary=f"Ошибка чтения файла: {e}")
+        pathlib.Path(output_path).write_text(report, encoding="utf-8")
+        return 1
+
+    content = raw.decode("utf-8", errors="replace").replace("\x00", "")
+    vacancies = parse_uploaded_file(file_path, content)
+    logger.info(f"  Загружено: {len(vacancies)} вакансий")
+    if not vacancies:
+        logger.warning("  Вакансии не найдены или неверный формат файла")
+        report = generate_report([], [], criteria_text=build_criteria_text(criteria), overall_summary="Вакансии не найдены или неверный формат файла.")
+        pathlib.Path(output_path).write_text(report, encoding="utf-8")
+        return 1
+
+    logger.info("[2/3] Агентный анализ через LLM...")
+    results, metadata = await analyze_with_llm(vacancies[:20], criteria)
+    logger.info(f"  Проанализировано: {len(results)} вакансий")
+    logger.info(f"  Тип анализа: {metadata.analysis_type}")
+    logger.info(f"  Итераций агента: {metadata.iterations_used}")
+    logger.info(f"  Пул вакансий: {metadata.total_vacancies_pool}")
 
     criteria_text = build_criteria_text(criteria)
-    report = generate_report(vacancies, results, criteria_text)
+    report = generate_report(vacancies, results, criteria_text, analysis_type=metadata.analysis_type, overall_summary=metadata.overall_summary)
 
     pathlib.Path(output_path).write_text(report, encoding="utf-8")
-    print(f"\n[3/3] Отчёт записан в {output_path}")
+    logger.info(f"[3/3] Отчёт записан в {output_path}")
+    return 0
+
+
+def _find_criteria_file() -> str | None:
+    for name in ("criteria.md", "criteria.txt", "criteria"):
+        if pathlib.Path(name).is_file():
+            return name
+    return None
+
+
+ALLOWED_EXTENSIONS = {".csv", ".json"}
 
 
 def main():
+    from logging_config import setup_logging
+    setup_logging()
+    logger = logging.getLogger("cli")
+
     parser = argparse.ArgumentParser(
         description="CLI для анализа вакансий: загрузка → LLM-анализ → markdown-отчёт",
     )
@@ -120,7 +153,7 @@ def main():
     parser.add_argument(
         "--criteria", "-c",
         default=None,
-        help="Путь к criteria.md (если не указан — интерактивный ввод)",
+        help="Путь к criteria.md (если не указан — авто-поиск или интерактивный ввод)",
     )
     parser.add_argument(
         "--output", "-o",
@@ -129,20 +162,38 @@ def main():
     )
     args = parser.parse_args()
 
-    if not pathlib.Path(args.file).exists():
-        print(f"Ошибка: файл {args.file} не найден")
+    file_path = pathlib.Path(args.file)
+    if not file_path.exists():
+        logger.error(f"Файл {args.file} не найден")
+        report = generate_report([], [], overall_summary=f"Файл {args.file} не найден.")
+        pathlib.Path(args.output).write_text(report, encoding="utf-8")
         sys.exit(1)
 
-    if args.criteria:
-        if not pathlib.Path(args.criteria).exists():
-            print(f"Ошибка: файл критериев {args.criteria} не найден")
+    if file_path.suffix.lower() not in ALLOWED_EXTENSIONS:
+        logger.error(f"Неподдерживаемый формат файла: {file_path.suffix}. Допустимы: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
+        sys.exit(1)
+
+    criteria_path = args.criteria or _find_criteria_file()
+    if criteria_path:
+        if not pathlib.Path(criteria_path).exists():
+            logger.error(f"Файл критериев {criteria_path} не найден")
             sys.exit(1)
-        criteria = parse_criteria_file(args.criteria)
-        print(f"Критерии загружены из {args.criteria}")
+        criteria = parse_criteria_file(criteria_path)
+        logger.info(f"Критерии загружены из {criteria_path}")
     else:
         criteria = interactive_criteria()
 
-    asyncio.run(run_pipeline(args.file, criteria, args.output))
+    try:
+        exit_code = asyncio.run(run_pipeline(args.file, criteria, args.output))
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        sys.exit(130)
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        report = generate_report([], [], criteria_text=build_criteria_text(criteria), overall_summary=f"Fatal error: {e}")
+        pathlib.Path(args.output).write_text(report, encoding="utf-8")
+        sys.exit(1)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

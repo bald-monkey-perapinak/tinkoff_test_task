@@ -1,10 +1,6 @@
-import pytest
-import pathlib
-import tempfile
 
+from cli import build_criteria_text, parse_criteria_file
 from models import CriteriaInput
-from cli import parse_criteria_file, build_criteria_text
-
 
 SAMPLE_CRITERIA = """\
 - Направление: Python

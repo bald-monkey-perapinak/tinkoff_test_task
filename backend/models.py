@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field
-from typing import Optional
 from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
 class Experience(str, Enum):
@@ -47,20 +48,6 @@ class Vacancy(BaseModel):
     is_mock: bool = False
 
 
-class VacancyFromHH(BaseModel):
-    id: str
-    name: str
-    employer: dict = {}
-    area: dict = {}
-    salary: Optional[dict] = None
-    schedule: dict = {}
-    experience: dict = {}
-    key_skills: list[dict] = []
-    snippet: Optional[dict] = None
-    alternate_url: str = ""
-    published_at: str = ""
-
-
 class AnalysisResult(BaseModel):
     vacancy_id: str
     rank: int = Field(ge=1, le=10)
@@ -98,3 +85,36 @@ class Favorite(BaseModel):
     title: str
     company: str
     url: str = ""
+
+
+class AgentPlanStep(BaseModel):
+    step_id: int
+    action: str
+    params: dict = {}
+    reason: str = ""
+
+
+class AgentPlan(BaseModel):
+    goal: str
+    steps: list[AgentPlanStep] = []
+    fallback_strategy: str = ""
+
+
+class AgentReflection(BaseModel):
+    iteration: int
+    pool_size: int
+    new_found: int
+    quality_assessment: str
+    strategy_adjustment: str
+    should_continue: bool
+    next_action: str
+
+
+class AgentMemoryEntry(BaseModel):
+    id: Optional[int] = None
+    user_key: str
+    criteria_hash: str
+    results_summary: str
+    top_score: int = 0
+    reflection: str
+    created_at: float = 0.0

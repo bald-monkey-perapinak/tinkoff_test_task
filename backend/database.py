@@ -1,11 +1,10 @@
-import aiosqlite
 import json
 import logging
 import time
-import asyncio
-import shutil
-from config import DB_PATH, SESSION_TTL_SECONDS, MAX_SESSION_PAYLOAD_BYTES, ANALYSIS_CACHE_TTL
-from models import Favorite, Subscription, Vacancy
+
+import aiosqlite
+from config import ANALYSIS_CACHE_TTL, DB_PATH, MAX_SESSION_PAYLOAD_BYTES, SESSION_TTL_SECONDS
+from models import AgentMemoryEntry, Favorite, Subscription, Vacancy
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +58,57 @@ async def init_db():
                     created_at REAL NOT NULL
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_key TEXT NOT NULL,
+                    criteria_hash TEXT NOT NULL,
+                    results_summary TEXT NOT NULL,
+                    top_score INTEGER DEFAULT 0,
+                    reflection TEXT DEFAULT '',
+                    created_at REAL NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_episodic_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_key TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    args_json TEXT DEFAULT '{}',
+                    result_summary TEXT DEFAULT '',
+                    quality_score INTEGER DEFAULT 5,
+                    criteria_hash TEXT DEFAULT '',
+                    reflection TEXT DEFAULT '',
+                    created_at REAL NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_semantic_memory (
+                    vacancy_id TEXT PRIMARY KEY,
+                    embedding BLOB NOT NULL,
+                    criteria_hash TEXT DEFAULT '',
+                    created_at REAL NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_traces (
+                    trace_id TEXT PRIMARY KEY,
+                    user_key TEXT NOT NULL,
+                    steps_json TEXT NOT NULL,
+                    reasoning_chain TEXT DEFAULT '[]',
+                    tool_calls_json TEXT DEFAULT '[]',
+                    total_duration_ms INTEGER DEFAULT 0,
+                    quality_score REAL DEFAULT 0.0,
+                    created_at REAL NOT NULL
+                )
+            """)
             await db.commit()
             await db.execute("CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_analysis_cache_created_at ON analysis_cache(created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_agent_memory_user_key ON agent_memory(user_key)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_episodic_user_key ON agent_episodic_memory(user_key)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_episodic_action ON agent_episodic_memory(action)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_traces_user_key ON agent_traces(user_key)")
             await db.commit()
             logger.info("Database initialized with WAL mode")
     except Exception as e:
@@ -312,3 +359,93 @@ async def backup_database():
             old.unlink()
     except Exception as e:
         logger.error(f"Database backup failed: {e}")
+
+
+async def save_agent_memory(entry: AgentMemoryEntry):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO agent_memory (user_key, criteria_hash, results_summary, top_score, reflection, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (entry.user_key, entry.criteria_hash, entry.results_summary, entry.top_score, entry.reflection, entry.created_at),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to save agent memory: {e}")
+
+
+async def get_agent_memory(user_key: str, limit: int = 10) -> list[AgentMemoryEntry]:
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM agent_memory WHERE user_key = ? ORDER BY created_at DESC LIMIT ?",
+                (user_key, limit),
+            )
+            rows = await cursor.fetchall()
+            return [AgentMemoryEntry(**dict(row)) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to get agent memory: {e}")
+        return []
+
+
+async def get_similar_memory_by_criteria(user_key: str, criteria_hash: str) -> AgentMemoryEntry | None:
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM agent_memory WHERE user_key = ? AND criteria_hash = ? ORDER BY created_at DESC LIMIT 1",
+                (user_key, criteria_hash),
+            )
+            row = await cursor.fetchone()
+            return AgentMemoryEntry(**dict(row)) if row else None
+    except Exception as e:
+        logger.error(f"Failed to get agent memory by criteria: {e}")
+        return None
+
+
+async def save_agent_trace(trace_id: str, user_key: str, steps_json: str,
+                           reasoning_chain: str, tool_calls_json: str,
+                           total_duration_ms: int, quality_score: float):
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """INSERT OR REPLACE INTO agent_traces
+                   (trace_id, user_key, steps_json, reasoning_chain, tool_calls_json, total_duration_ms, quality_score, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (trace_id, user_key, steps_json, reasoning_chain, tool_calls_json,
+                 total_duration_ms, quality_score, time.time()),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to save agent trace: {e}")
+
+
+async def get_agent_trace(trace_id: str) -> dict | None:
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM agent_traces WHERE trace_id = ?", (trace_id,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return dict(row)
+    except Exception as e:
+        logger.error(f"Failed to get agent trace: {e}")
+        return None
+
+
+async def get_agent_traces(user_key: str, limit: int = 10) -> list[dict]:
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM agent_traces WHERE user_key = ? ORDER BY created_at DESC LIMIT ?",
+                (user_key, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to get agent traces: {e}")
+        return []

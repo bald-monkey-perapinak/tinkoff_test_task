@@ -1,8 +1,9 @@
 import csv
-import json
 import io
-import re
+import json
 import logging
+import re
+
 from models import Vacancy
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,8 @@ def _csv_safe(value: str) -> str:
 
 def parse_vacancies_json(content: str) -> list[Vacancy]:
     content = content.replace("\x00", "")
+    if content.startswith("\ufeff"):
+        content = content[1:]
     try:
         data = json.loads(content)
         if not isinstance(data, list):
@@ -72,9 +75,14 @@ def parse_vacancies_json(content: str) -> list[Vacancy]:
 
 def parse_vacancies_csv(content: str) -> list[Vacancy]:
     content = content.replace("\x00", "")
+    if content.startswith("\ufeff"):
+        content = content[1:]
     try:
         reader = csv.DictReader(io.StringIO(content))
-        if reader.fieldnames and len(reader.fieldnames) > MAX_CSV_COLUMNS:
+        if not reader.fieldnames:
+            logger.warning("CSV has no headers, rejecting")
+            return []
+        if len(reader.fieldnames) > MAX_CSV_COLUMNS:
             logger.warning(f"CSV has {len(reader.fieldnames)} columns (max {MAX_CSV_COLUMNS}), rejecting")
             return []
         vacancies = []
@@ -122,6 +130,12 @@ def parse_vacancies_csv(content: str) -> list[Vacancy]:
 
 
 def parse_uploaded_file(filename: str, content: str) -> list[Vacancy]:
+    lower_name = filename.lower()
+    if lower_name.endswith(".json"):
+        return parse_vacancies_json(content)
+    if lower_name.endswith(".csv"):
+        return parse_vacancies_csv(content)
+
     content_stripped = content.strip()
     if content_stripped.startswith("{") or content_stripped.startswith("["):
         return parse_vacancies_json(content)

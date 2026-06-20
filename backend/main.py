@@ -1,45 +1,57 @@
 import asyncio
 import csv
+import hashlib
 import io
-import json
 import logging
 import shutil
-import uuid
 import time
+import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-from fastapi.responses import JSONResponse
 
+from circuit_breaker import groq_breaker, hh_breaker
+from cli import build_criteria_text
 from config import (
-    TELEGRAM_WEBAPP_URL, ALLOWED_ORIGINS, MAX_UPLOAD_SIZE,
-    MAX_VACANCIES_PER_SESSION, SESSION_TTL_SECONDS, RATE_LIMITS,
-    HH_API_BASE, HH_PROXY, GROQ_API_KEY, DB_PATH,
-    NOTIFICATION_INTERVAL, validate_startup_config,
+    ALLOWED_ORIGINS,
+    DB_PATH,
+    GROQ_API_KEY,
+    LLM_MODEL,
+    MAX_UPLOAD_SIZE,
+    MAX_VACANCIES_PER_SESSION,
+    NOTIFICATION_INTERVAL,
+    RATE_LIMITS,
+    validate_startup_config,
 )
 from database import (
-    init_db, add_favorite, remove_favorite, get_favorites,
-    add_subscription, remove_subscription, get_active_subscriptions,
-    is_vacancy_seen, mark_vacancy_seen,
-    batch_is_vacancy_seen, batch_mark_vacancies_seen,
-    save_session, get_session, cleanup_expired_sessions, get_all_session_vacancies,
+    add_favorite,
+    add_subscription,
     backup_database,
+    batch_is_vacancy_seen,
+    batch_mark_vacancies_seen,
+    cleanup_expired_sessions,
+    get_active_subscriptions,
+    get_all_session_vacancies,
+    get_favorites,
+    get_session,
+    init_db,
+    remove_favorite,
+    remove_subscription,
+    save_session,
 )
-from models import SearchParams, Vacancy, CriteriaInput, Favorite, Subscription, Schedule
-from services.hh_client import search_vacancies, get_area_suggestions, get_role_suggestions
-from services.parser import parse_uploaded_file, _csv_safe
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from logging_config import generate_request_id, request_id_var, setup_logging
+from models import CriteriaInput, Favorite, Schedule, SearchParams, Subscription
 from services.analyzer import analyze_with_llm
-from services.report import generate_report
+from services.hh_client import get_area_suggestions, get_role_suggestions, search_vacancies
 from services.notifier import notify_new_vacancies
-from auth import require_telegram_auth
-from circuit_breaker import hh_breaker, groq_breaker
-from cli import build_criteria_text
+from services.parser import _csv_safe, parse_uploaded_file
+from services.report import generate_report
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+setup_logging()
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
@@ -114,7 +126,11 @@ async def lifespan(app: FastAPI):
             await _background_task
         except asyncio.CancelledError:
             pass
-    logger.info("Background notification task stopped")
+    from services.hh_client import close_clients as close_hh_clients
+    from services.notifier import close_clients as close_notifier_clients
+    await close_hh_clients()
+    await close_notifier_clients()
+    logger.info("HTTP clients closed, background notification task stopped")
 
 
 app = FastAPI(title="Vacancy Agent API", lifespan=lifespan)
@@ -123,9 +139,13 @@ app.state.limiter = limiter
 
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
-    request_id = str(uuid.uuid4())[:8]
+    request_id = generate_request_id()
+    token = request_id_var.set(request_id)
     request.state.request_id = request_id
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
     response.headers["X-Request-ID"] = request_id
     return response
 
@@ -281,13 +301,13 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
         if not vacancies_to_analyze:
             raise HTTPException(status_code=404, detail="No vacancies to analyze")
 
-        results = await asyncio.wait_for(
+        results, metadata = await asyncio.wait_for(
             analyze_with_llm(vacancies_to_analyze[:10], criteria),
-            timeout=30.0,
+            timeout=60.0,
         )
         criteria_text = build_criteria_text(criteria)
 
-        report = generate_report(vacancies_to_analyze, results, criteria_text)
+        report = generate_report(vacancies_to_analyze, results, criteria_text, analysis_type=metadata.analysis_type, overall_summary=metadata.overall_summary)
 
         valid_ids = {v.id for v in vacancies_to_analyze}
         enriched = []
@@ -301,10 +321,13 @@ async def api_analyze(request: Request, criteria: CriteriaInput):
                 "vacancy": v.model_dump(),
             })
 
-        logger.info(f"[{request.state.request_id}] Analyze: {len(enriched)} results")
+        logger.info(f"[{request.state.request_id}] Analyze: {len(enriched)} results, type={metadata.analysis_type}, iterations={metadata.iterations_used}")
         return {
             "results": enriched,
             "report": report,
+            "analysis_type": metadata.analysis_type,
+            "iterations_used": metadata.iterations_used,
+            "total_vacancies_pool": metadata.total_vacancies_pool,
         }
     except HTTPException:
         raise
@@ -322,9 +345,9 @@ async def api_report(request: Request):
         if not all_vacancies:
             return PlainTextResponse("No data. Upload vacancies or run search first.", status_code=404)
         criteria = CriteriaInput()
-        results = await analyze_with_llm(all_vacancies[:10], criteria)
-        report = generate_report(all_vacancies, results)
-        logger.info(f"[{request.state.request_id}] Report generated: {len(all_vacancies)} vacancies")
+        results, metadata = await analyze_with_llm(all_vacancies[:10], criteria)
+        report = generate_report(all_vacancies, results, analysis_type=metadata.analysis_type, overall_summary=metadata.overall_summary)
+        logger.info(f"[{request.state.request_id}] Report generated: {len(all_vacancies)} vacancies, type={metadata.analysis_type}")
         return PlainTextResponse(report, media_type="text/markdown")
     except HTTPException:
         raise
@@ -340,7 +363,10 @@ def _get_chat_id(request: Request) -> int:
             return int(user["user"].split(",")[0]) if isinstance(user["user"], str) else int(user["id"])
         except (ValueError, KeyError, TypeError):
             pass
-    return 0
+    client_host = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+    dev_hash = hashlib.sha256(f"{client_host}:{user_agent}".encode()).hexdigest()[:8]
+    return int(dev_hash, 16) % 1000000 + 9000000
 
 
 @app.post("/api/favorites")
@@ -384,8 +410,14 @@ async def api_get_favorites(request: Request):
 @limiter.limit(RATE_LIMITS["default"])
 async def api_subscribe(request: Request, sub: Subscription):
     try:
+        chat_id = _get_chat_id(request)
+        if sub.chat_id and sub.chat_id != chat_id:
+            raise HTTPException(status_code=403, detail="chat_id mismatch with authenticated user")
+        sub.chat_id = chat_id
         sub_id = await add_subscription(sub)
         return {"id": sub_id, "status": "ok"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[{getattr(request.state, 'request_id', '?')}] Subscribe failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to create subscription")
@@ -467,12 +499,32 @@ async def api_health_ready():
         async with aiosqlite.connect(DB_PATH, timeout=2) as db:
             await asyncio.wait_for(db.execute("SELECT 1"), timeout=2)
         checks["database"] = "ok"
-    except Exception as e:
+    except Exception:
         checks["database"] = "error: database unavailable"
         status = "degraded"
 
     checks["hh_circuit"] = hh_breaker.get_state()
     checks["groq_circuit"] = groq_breaker.get_state()
+
+    if GROQ_API_KEY:
+        try:
+            import groq
+            client = groq.Groq(api_key=GROQ_API_KEY)
+            loop = asyncio.get_running_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: client.chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                )),
+                timeout=10.0,
+            )
+            checks["llm"] = "ok"
+        except Exception as e:
+            checks["llm"] = f"error: {type(e).__name__}"
+            status = "degraded"
+    else:
+        checks["llm"] = "skipped: no GROQ_API_KEY"
 
     try:
         free_gb = shutil.disk_usage(DB_PATH.parent).free / 1e9
@@ -498,7 +550,7 @@ async def api_export(request: Request, format: str = Query(default="json")):
             raise HTTPException(status_code=404, detail="No data to export")
 
         criteria = CriteriaInput()
-        results = await analyze_with_llm(all_vacancies[:10], criteria)
+        results, _metadata = await analyze_with_llm(all_vacancies[:10], criteria)
 
         if format == "csv":
             output = io.StringIO()
@@ -536,3 +588,33 @@ async def api_export(request: Request, format: str = Query(default="json")):
     except Exception as e:
         logger.error(f"Export failed: {e}")
         raise HTTPException(status_code=500, detail="Export failed")
+
+
+@app.get("/api/agent/traces")
+@limiter.limit(RATE_LIMITS["default"])
+async def api_get_traces(request: Request, limit: int = Query(default=10, ge=1, le=50)):
+    try:
+        chat_id = _get_chat_id(request)
+        user_key = str(chat_id)
+        from database import get_agent_traces
+        traces = await get_agent_traces(user_key, limit=limit)
+        return {"traces": traces}
+    except Exception as e:
+        logger.error(f"Get traces failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load traces")
+
+
+@app.get("/api/agent/traces/{trace_id}")
+@limiter.limit(RATE_LIMITS["default"])
+async def api_get_trace(request: Request, trace_id: str):
+    try:
+        from database import get_agent_trace
+        trace = await get_agent_trace(trace_id)
+        if not trace:
+            raise HTTPException(status_code=404, detail="Trace not found")
+        return trace
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get trace failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load trace")

@@ -1,7 +1,6 @@
 import pytest
-
-from models import Vacancy, CriteriaInput, AnalysisResult
-from services.analyzer import _rule_based_analyze, _sanitize, _parse_date
+from models import AnalysisResult, CriteriaInput, Vacancy
+from services.analyzer import _parse_date, _rule_based_analyze, _sanitize
 
 
 class TestSanitize:
@@ -25,7 +24,7 @@ class TestSanitize:
         result = _sanitize(text)
         assert "<" not in result
         assert ">" not in result
-        assert "script" in result
+        assert "script" not in result
 
     def test_pipes_and_backslashes(self):
         """Pipe and backslash characters are removed."""

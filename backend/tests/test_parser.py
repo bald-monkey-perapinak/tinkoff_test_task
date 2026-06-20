@@ -1,12 +1,11 @@
 import json
-import pytest
 
 from models import Vacancy
 from services.parser import (
-    parse_vacancies_json,
-    parse_vacancies_csv,
-    parse_uploaded_file,
     _deduplicate,
+    parse_uploaded_file,
+    parse_vacancies_csv,
+    parse_vacancies_json,
 )
 
 

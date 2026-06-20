@@ -236,62 +236,6 @@ class ExpandSearchTool(BaseTool):
             return ToolResult(success=False, error=str(e), duration_ms=duration)
 
 
-class ReflectTool(BaseTool):
-    name = "reflect"
-    description = "Анализ результатов и рекомендация следующего действия."
-    parameters_schema = {
-        "type": "object",
-        "properties": {
-            "iteration": {"type": "integer", "description": "Текущая итерация"},
-            "pool_size": {"type": "integer", "description": "Размер текущего пула вакансий"},
-            "avg_score": {"type": "number", "description": "Средний score вакансий"},
-            "high_score_count": {"type": "integer", "description": "Количество вакансий с score >= 7"},
-        },
-        "required": ["iteration", "pool_size"],
-    }
-
-    async def execute(self, iteration: int = 0, pool_size: int = 0,
-                      avg_score: float = 5.0, high_score_count: int = 0,
-                      **kwargs) -> ToolResult:
-        start = time.monotonic()
-        try:
-            should_continue = True
-            recommendation = ""
-            suggested_action = "continue"
-
-            if high_score_count >= 3:
-                should_continue = False
-                recommendation = "Достаточно хороших вариантов для отчёта"
-                suggested_action = "finalize"
-            elif pool_size < 5 and iteration < 3:
-                recommendation = "Мало вакансий — расширить поиск"
-                suggested_action = "expand_search"
-            elif avg_score < 4 and iteration < 3:
-                recommendation = "Низкий средний score — изменить параметры поиска"
-                suggested_action = "adjust_search"
-            elif iteration >= 4:
-                should_continue = False
-                recommendation = "Достигнут лимит итераций, завершаем"
-                suggested_action = "finalize"
-            else:
-                recommendation = "Продолжаем поиск"
-                suggested_action = "continue"
-
-            duration = int((time.monotonic() - start) * 1000)
-            return ToolResult(
-                success=True,
-                data={
-                    "should_continue": should_continue,
-                    "recommendation": recommendation,
-                    "suggested_action": suggested_action,
-                },
-                duration_ms=duration,
-            )
-        except Exception as e:
-            duration = int((time.monotonic() - start) * 1000)
-            return ToolResult(success=False, error=str(e), duration_ms=duration)
-
-
 class ToolRegistry:
     def __init__(self):
         self.tools: dict[str, BaseTool] = {}
@@ -301,10 +245,8 @@ class ToolRegistry:
         for tool_cls in [
             SearchVacanciesTool,
             FilterResultsTool,
-            ScoreVacanciesTool,
             GenerateReportTool,
             ExpandSearchTool,
-            ReflectTool,
         ]:
             self.register(tool_cls())
 

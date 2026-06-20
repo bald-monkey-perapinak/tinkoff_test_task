@@ -14,6 +14,28 @@ SQLite (избранное, подписки)   Groq API (LLM анализ)
 Telegram Bot API (уведомления)
 ```
 
+### Агентный pipeline
+
+```
+analyze_with_llm()
+    │
+    ├─ GROQ доступен? ──нет──> _run_hybrid() [rule-based через ScoreCalculator]
+    │
+    └─ да
+         │
+         ├─ Кэш есть? ──да──> вернуть кэш
+         │
+         └─ нет ──> VacancyAgent._run_llm_only()
+                       │
+                       ├─ _plan() — LLM создаёт план поиска
+                       │           (если не удалось → fallback на hybrid)
+                       │
+                       └─ _execute() loop:
+                            ├─ LLM решает: search / reflect / finalize
+                            ├─ Принудительный reflection gate каждые 2 поиска
+                            └─ finalize только через explicit tool call модели
+```
+
 ## Быстрый старт
 
 ### 1. Backend
@@ -76,24 +98,6 @@ keyboard = [[InlineKeyboardButton("Открыть", web_app=WebAppInfo(url="http
 
 ## Как пользоваться ботом
 
-### Запуск
-
-```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-
-# Frontend (отдельный терминал)
-cd frontend
-npm install
-npm run dev
-```
-
-Откройте http://localhost:5173 в браузере или запустите через Telegram Mini App.
-
----
-
 ### Поиск вакансий
 
 1. На вкладке **«Поиск»** введите должность — например, `junior python developer`
@@ -107,18 +111,14 @@ npm run dev
 5. Просматривайте карточки, добавляйте в избранное (★)
 6. Нажмите **«AI-проанализировать»** внизу экрана для оценки
 
----
-
 ### AI-анализ
 
 1. Перейдите на вкладку **«AI-анализ»**
 2. Нажмите **«AI-проанализировать вакансии»**
-3. Получите топ вакансий с оценкой соответствия (1–10) и объяснениями:
+3. Получите топ-5 вакансий с оценкой соответствия (1–10) и объяснениями:
    - Почему подходит
    - Что смущает
 4. Скачайте отчёт: **.md** / **.csv** / **.json**
-
----
 
 ### Загрузка своих вакансий
 
@@ -126,8 +126,6 @@ npm run dev
 2. Подготовьте файл формата JSON или CSV (см. [пример](data/sample_vacancies.json))
 3. Перетащите файл в зону загрузки или нажмите для выбора
 4. Вакансии появятся на вкладке «Поиск» — можно анализировать
-
----
 
 ### Подписки на новые вакансии
 
@@ -137,8 +135,6 @@ npm run dev
 4. Бот будет проверять hh.ru каждые 5 минут и присылать новые вакансии в Telegram
 
 > Требуется настроенный Telegram-бот (токен через @BotFather) и переменная `TELEGRAM_BOT_TOKEN` в `.env`
-
----
 
 ### CLI (без веб-интерфейса)
 
@@ -202,43 +198,12 @@ python cli.py --file vacancies.json --criteria criteria.md --output report.md
    Что смущает: Зарплата на нижней границе
 ```
 
-### Markdown-отчёт (скачивается)
-```markdown
-# Отчёт по анализу вакансий
-Дата: 2026-06-19
-Вакансий проанализировано: 20
-В результат топ: 5
-
-## 🥇 Junior Python Developer — Тинькофф
-| Параметр | Значение |
-|----------|----------|
-| Город | Москва |
-| Зарплата | от 80 000 ₽ |
-| Оценка | 9/10 |
-```
-
-## Telegram Web App SDK
-
-Приложение использует `@twa-dev/sdk` для интеграции с Telegram:
-
-| API | Использование |
-|-----|---------------|
-| `WebApp.ready()` | Уведомление Telegram что app готов |
-| `WebApp.expand()` | Развёртывание на весь экран |
-| `WebApp.themeParams` | Автоматическая подстройка под тему |
-| `WebApp.MainButton` | Основная кнопка внизу экрана |
-| `WebApp.BackButton` | Кнопка «Назад» |
-| `WebApp.HapticFeedback` | Вибрация при действиях |
-| `WebApp.openLink()` | Открытие ссылок в in-app браузере |
-| `WebApp.showAlert()` | Нативные alert-диалоги |
-| `WebApp.safeAreaInset` | Безопасные зоны (Dynamic Island, notch) |
-
 ## API Endpoints
 
 | Method | Path | Описание |
 |--------|------|----------|
 | GET | `/api/search` | Поиск вакансий через hh.ru API |
-| POST | `/api/upload` | Загрузка CSV/JSON файла |
+| POST | `/api/upload` | Загрузка CSV/JSON файла (с проверкой расширения) |
 | POST | `/api/analyze` | AI-анализ по критериям (Groq) |
 | GET | `/api/report` | Markdown-отчёт |
 | GET | `/api/favorites` | Список избранного |
@@ -249,44 +214,22 @@ python cli.py --file vacancies.json --criteria criteria.md --output report.md
 | DELETE | `/api/subscribe/{id}` | Удалить подписку |
 | GET | `/api/areas?q=` | Автокомплит городов |
 | GET | `/api/roles?q=` | Автокомплит сфер |
+| GET | `/api/health/live` | Liveness probe |
+| GET | `/api/health/ready` | Readiness probe (БД, circuit breaker) |
 
 > FastAPI автоматически генерирует интерактивную документацию API: Swagger UI доступен по адресу `/docs`, ReDoc — по `/redoc`.
 
-## CLI-режим (без веб-интерфейса)
-
-Работает полностью независимо от FastAPI и фронтенда — тот же pipeline через терминал.
-
-```bash
-cd backend
-python cli.py --file ../data/sample_vacancies.json --output ../report.md
-
-# С критериями из файла:
-python cli.py --file vacancies.json --criteria criteria.md
-
-# Интерактивный ввод (если --criteria не указан):
-python cli.py --file vacancies.json
-```
-
-Формат `criteria.md`:
-```markdown
-- Направление: Python
-- Город: Москва
-- Только удалёнка: да
-- Минимальная зарплата: 80000
-- Уровень: без опыта
-- Навыки: Python, FastAPI, SQL
-- Дата публикации от: 2026-06-01
-```
-
 ## Надёжность и безопасность
 
-- **Prompt sanitization** (`_sanitize()` в analyzer.py) — защита от injection в LLM-промпт: фильтрация `<`, `>`, `|`, `\`, `` ` `` и других опасных символов
+- **Единый scoring** — вся оценка вакансий проходит через `ScoreCalculator` (scorer.py) с весовыми коэффициентами. Нет дублирования логики.
+- **Prompt sanitization** — защита от injection: фильтрация HTML, JS-ссылок, инъекций в LLM-промпт
 - **Retry с exponential backoff** — Groq API (3 попытки, задержка 1→2→4с) и hh.ru API (3 попытки + respect Retry-After при HTTP 429)
 - **Кэширование анализа** — SHA-256 hash от (вакансии + критерии), повторный запрос отдаёт кэш без обращения к LLM
-- **Rule-based fallback** — при отсутствии Groq API-ключа анализ работает на детерминированных правилах (направление, зарплата, навыки, формат, дата публикации) с ранжированием по score
-- **Фильтр по дате публикации** — `date_from` в критериях исключает старые вакансии
-- **Рекомендации** — rule-based и LLM анализ включают поле `recommendation` (что сделать дальше)
+- **Rule-based fallback** — при отсутствии Groq API-ключа или срабатывании circuit breaker анализ работает через `ScoreCalculator`
+- **Фильтр по дате публикации** — `date_from` в критериях исключает старые вакансии до оценки
 - **Mock-fallback для hh.ru** — при недоступности API загружаются данные из `data/sample_vacancies.json`
+- **CSV-injection protection** — экранирование `=`, `+`, `-`, `@` в начале CSV-полей
+- **Circuit breaker** — автоматическое отключение при ошибках Groq/hh.ru с последующим восстановлением
 
 ## Прокси для hh.ru
 
@@ -296,9 +239,14 @@ hh.ru может блокировать IP при частых запросах.
 2. **Ротация из файла:** `HH_PROXY_LIST=data/proxies.txt` (по одному прокси на строку)
 3. **Без прокси:** приложение работает напрямую; при блокировке — fallback на mock-данные
 
-Файл `data/proxies.txt` содержит примеры прокси (строки, начинающиеся с `#` — комментарии).
-
 **Уровни отказоустойчивости:** реальный API → ротация прокси → circuit breaker → mock-данные.
+
+## Стек
+
+- **Backend**: FastAPI, Python 3.11+, httpx, aiosqlite, groq
+- **Frontend**: React 18, TypeScript, Vite, `@twa-dev/sdk` (Telegram Web App)
+- **LLM**: Groq API (Llama 3.3 70B)
+- **Данные**: hh.ru API (публичный)
 
 ## Ограничения
 
@@ -309,10 +257,3 @@ hh.ru может блокировать IP при частых запросах.
 - **Деплой**: Mini App требует HTTPS (Vercel, Netlify, Railway)
 
 **hh.ru API и ToS:** Используется только официальный публичный API hh.ru без авторизации. Переменные `HH_PROXY`/`HH_PROXY_LIST` предназначены исключительно для отказоустойчивости при сетевых блокировках IP, а **не** для обхода rate-limit или антибот защиты. При недоступности hh.ru приложение полностью работает на mock-данных (fallback).
-
-## Стек
-
-- **Backend**: FastAPI, Python 3.11+, httpx, aiosqlite, groq
-- **Frontend**: React 18, TypeScript, Vite, `@twa-dev/sdk` (Telegram Web App)
-- **LLM**: Groq API (Llama 3.3 70B)
-- **Данные**: hh.ru API (публичный)

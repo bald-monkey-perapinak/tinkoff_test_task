@@ -48,85 +48,51 @@ def _sanitize_vacancy_field(text: str, max_len: int) -> str:
 
 
 def _rule_based_analyze(vacancies: list[Vacancy], criteria: CriteriaInput) -> list[AnalysisResult]:
-    date_threshold = _parse_date(criteria.date_from) if criteria.date_from else None
-    results = []
+    from services.scorer import ScoreCalculator
 
+    date_threshold = _parse_date(criteria.date_from) if criteria.date_from else None
+    filtered = []
     for v in vacancies[:20]:
         if date_threshold and v.published_at:
             pub_date = _parse_date(v.published_at)
             if pub_date and pub_date < date_threshold:
                 continue
+        filtered.append(v)
 
-        score = 5
-        concerns = []
-        why = []
+    calculator = ScoreCalculator(criteria)
+    scored = calculator.score_vacancies(filtered)
+    top = scored[:5]
 
-        if criteria.direction and criteria.direction.lower() in v.title.lower():
-            score += 2
-            why.append("направление совпадает")
-        elif criteria.direction:
-            score -= 1
-            concerns.append("направление не совпадает")
-        if criteria.remote_only:
-            if "удалён" in v.schedule.lower() or "remote" in v.schedule.lower():
-                score += 1
-                why.append("удалённый формат")
-            else:
-                score -= 1
-                concerns.append("нет удалённого формата")
-        if criteria.min_salary and v.salary_from and v.salary_from >= criteria.min_salary:
-            score += 1
-            why.append("зарплата устраивает")
-        elif criteria.min_salary and v.salary_from and v.salary_from < criteria.min_salary:
-            score -= 1
-            concerns.append("зарплата ниже порога")
-        if criteria.key_skills:
-            matched = [s for s in criteria.key_skills if s.lower() in " ".join(v.skills).lower()]
-            if matched:
-                score += 1
-                why.append(f"навыки: {', '.join(matched)}")
-            else:
-                concerns.append("нет совпадений по навыкам")
-
-        if not why:
-            why.append("вакансия может подойти по общим критериям")
-        if not v.skills:
-            concerns.append("навыки не указаны")
-        if not v.salary:
-            concerns.append("зарплата не указана")
-
-        score = max(1, min(score, 10))
-
+    results = []
+    for sr in top:
+        vacancy = next((v for v in vacancies if v.id == sr.vacancy_id), None)
+        summary = f"{vacancy.title} в {vacancy.company}" if vacancy else sr.vacancy_id
         results.append(AnalysisResult(
-            vacancy_id=v.id,
+            vacancy_id=sr.vacancy_id,
             rank=1,
-            fit_score=score,
-            why_fits="; ".join(why),
-            concerns="; ".join(concerns) if concerns else "серьёзных замечаний нет",
-            summary=f"{v.title} в {v.company}",
+            fit_score=max(1, min(10, int(sr.score))),
+            why_fits="; ".join(sr.reasons),
+            concerns="; ".join(sr.concerns) if sr.concerns else "серьёзных замечаний нет",
+            summary=summary,
         ))
 
     results.sort(key=lambda r: r.fit_score, reverse=True)
     for i, r in enumerate(results):
         r.rank = i + 1
 
-    top = results[:5]
-    if not top:
+    if not results:
         pass
-    elif all(r.fit_score < 5 for r in top):
-        for r in top:
+    elif all(r.fit_score < 5 for r in results):
+        for r in results:
             r.recommendation = "Ни одна вакансия не набрала более 4 баллов. Рекомендуется расширить поиск или снизить требования."
     else:
-        low = [r for r in top if r.fit_score < 5]
-        if low:
-            for r in low:
+        for r in results:
+            if r.fit_score < 5:
                 r.recommendation = "Эта вакансия слабо подходит. Обратите внимание на вакансии с более высоким score."
-        high = [r for r in top if r.fit_score >= 7]
-        if high:
-            for r in high:
+            elif r.fit_score >= 7:
                 r.recommendation = "Хороший вариант — стоит откликнуться."
 
-    return top
+    return results
 
 
 def _build_cache_key(vacancies: list[Vacancy], criteria: CriteriaInput) -> str:

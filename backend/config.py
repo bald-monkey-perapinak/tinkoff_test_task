@@ -61,4 +61,3 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2000"))
 AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "5"))
 AGENT_TRACE_ENABLED = os.getenv("AGENT_TRACE_ENABLED", "true").lower() == "true"
 AGENT_MEMORY_TTL_DAYS = int(os.getenv("AGENT_MEMORY_TTL_DAYS", "30"))
-AGENT_USE_ORCHESTRATOR = os.getenv("AGENT_USE_ORCHESTRATOR", "true").lower() == "true"

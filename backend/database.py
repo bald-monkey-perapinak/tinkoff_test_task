@@ -83,14 +83,6 @@ async def init_db():
                 )
             """)
             await db.execute("""
-                CREATE TABLE IF NOT EXISTS agent_semantic_memory (
-                    vacancy_id TEXT PRIMARY KEY,
-                    embedding BLOB NOT NULL,
-                    criteria_hash TEXT DEFAULT '',
-                    created_at REAL NOT NULL
-                )
-            """)
-            await db.execute("""
                 CREATE TABLE IF NOT EXISTS agent_traces (
                     trace_id TEXT PRIMARY KEY,
                     user_key TEXT NOT NULL,

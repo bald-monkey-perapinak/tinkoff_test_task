@@ -4,8 +4,6 @@ from services.tools import (
     ExpandSearchTool,
     FilterResultsTool,
     GenerateReportTool,
-    ReflectTool,
-    ScoreVacanciesTool,
     ToolRegistry,
 )
 
@@ -35,10 +33,8 @@ class TestToolRegistry:
         names = registry.get_tool_names()
         assert "search_vacancies" in names
         assert "filter_results" in names
-        assert "score_vacancies" in names
         assert "generate_report" in names
         assert "expand_search" in names
-        assert "reflect" in names
 
     def test_get_tool(self):
         registry = ToolRegistry()
@@ -54,7 +50,7 @@ class TestToolRegistry:
     def test_get_all_schemas(self):
         registry = ToolRegistry()
         schemas = registry.get_all_schemas()
-        assert len(schemas) == 6
+        assert len(schemas) == 4
         assert all("function" in s for s in schemas)
 
     def test_get_descriptions(self):
@@ -95,22 +91,6 @@ class TestFilterResultsTool:
         assert result.data["filtered_count"] == 1
 
 
-class TestScoreVacanciesTool:
-    @pytest.mark.asyncio
-    async def test_score_vacancies(self):
-        tool = ScoreVacanciesTool()
-        vacancies = [
-            _make_vacancy(id="1", title="Python Developer"),
-            _make_vacancy(id="2", title="Java Developer"),
-        ]
-        criteria = CriteriaInput(direction="Python")
-        result = await tool.execute(vacancies=vacancies, criteria=criteria)
-        assert result.success is True
-        assert result.data["count"] == 2
-        results = result.data["results"]
-        assert results[0].score >= results[1].score
-
-
 class TestGenerateReportTool:
     @pytest.mark.asyncio
     async def test_generate_report(self):
@@ -146,29 +126,3 @@ class TestExpandSearchTool:
         result = await tool.execute(original_query="unknown query")
         assert result.success is True
         assert len(result.data["queries"]) >= 2
-
-
-class TestReflectTool:
-    @pytest.mark.asyncio
-    async def test_reflect_finalize_when_enough(self):
-        tool = ReflectTool()
-        result = await tool.execute(iteration=1, pool_size=10, avg_score=7.5, high_score_count=4)
-        assert result.success is True
-        assert result.data["should_continue"] is False
-        assert result.data["suggested_action"] == "finalize"
-
-    @pytest.mark.asyncio
-    async def test_reflect_continue_when_few(self):
-        tool = ReflectTool()
-        result = await tool.execute(iteration=1, pool_size=3, avg_score=5.0, high_score_count=0)
-        assert result.success is True
-        assert result.data["should_continue"] is True
-        assert result.data["suggested_action"] == "expand_search"
-
-    @pytest.mark.asyncio
-    async def test_reflect_finalize_on_max_iterations(self):
-        tool = ReflectTool()
-        result = await tool.execute(iteration=5, pool_size=10, avg_score=5.0, high_score_count=1)
-        assert result.success is True
-        assert result.data["should_continue"] is False
-        assert result.data["suggested_action"] == "finalize"

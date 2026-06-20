@@ -166,97 +166,10 @@ class EpisodicMemory:
         )
 
 
-class SemanticMemory:
-    def __init__(self):
-        self.db_path = DB_PATH
-        self._groq_client = None
-
-    async def _get_groq_client(self):
-        if self._groq_client is None:
-            from config import GROQ_API_KEY
-            if not GROQ_API_KEY:
-                return None
-            import groq
-            self._groq_client = groq.Groq(api_key=GROQ_API_KEY)
-        return self._groq_client
-
-    async def get_embedding(self, text: str) -> list[float] | None:
-        client = await self._get_groq_client()
-        if not client:
-            return None
-        try:
-            response = client.embeddings.create(
-                model="llama-3.3-70b-versatile",
-                input=text[:2000],
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.warning(f"Groq embedding failed: {e}")
-            return None
-
-    async def save_vacancy_embedding(self, vacancy_id: str, embedding: list[float], criteria_hash: str = ""):
-        try:
-            import numpy as np
-            blob = np.array(embedding, dtype=np.float32).tobytes()
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute(
-                    "INSERT OR REPLACE INTO agent_semantic_memory (vacancy_id, embedding, criteria_hash, created_at) VALUES (?, ?, ?, ?)",
-                    (vacancy_id, blob, criteria_hash, time.time()),
-                )
-                await db.commit()
-        except Exception as e:
-            logger.error(f"Failed to save vacancy embedding: {e}")
-
-    async def find_similar(self, query_embedding: list[float], top_k: int = 5) -> list[tuple[str, float]]:
-        try:
-            import numpy as np
-            async with aiosqlite.connect(self.db_path) as db:
-                cursor = await db.execute(
-                    "SELECT vacancy_id, embedding FROM agent_semantic_memory ORDER BY created_at DESC LIMIT 200"
-                )
-                rows = await cursor.fetchall()
-
-            if not rows:
-                return []
-
-            query_vec = np.array(query_embedding, dtype=np.float32)
-            query_norm = np.linalg.norm(query_vec)
-            if query_norm == 0:
-                return []
-
-            scores = []
-            for vid, blob in rows:
-                try:
-                    vec = np.frombuffer(blob, dtype=np.float32)
-                    vec_norm = np.linalg.norm(vec)
-                    if vec_norm == 0:
-                        continue
-                    cosine = float(np.dot(query_vec, vec) / (query_norm * vec_norm))
-                    scores.append((vid, cosine))
-                except Exception:
-                    continue
-
-            scores.sort(key=lambda x: x[1], reverse=True)
-            return scores[:top_k]
-        except Exception as e:
-            logger.error(f"Failed to find similar vacancies: {e}")
-            return []
-
-    async def cleanup(self, max_age_days: int = 30):
-        try:
-            cutoff = time.time() - (max_age_days * 86400)
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("DELETE FROM agent_semantic_memory WHERE created_at < ?", (cutoff,))
-                await db.commit()
-        except Exception as e:
-            logger.error(f"Failed to cleanup semantic memory: {e}")
-
-
 class MemoryManager:
     def __init__(self):
         self.working = WorkingMemory()
         self.episodic = EpisodicMemory()
-        self.semantic = SemanticMemory()
 
     def reset_working(self):
         self.working = WorkingMemory()

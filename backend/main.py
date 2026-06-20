@@ -14,7 +14,6 @@ from config import (
     ALLOWED_ORIGINS,
     DB_PATH,
     GROQ_API_KEY,
-    LLM_MODEL,
     MAX_UPLOAD_SIZE,
     MAX_VACANCIES_PER_SESSION,
     NOTIFICATION_INTERVAL,
@@ -245,6 +244,11 @@ async def api_search(
 @limiter.limit(RATE_LIMITS["upload"])
 async def api_upload(request: Request, file: UploadFile = File(...)):
     try:
+        import pathlib
+        ext = pathlib.Path(file.filename or "").suffix.lower()
+        if ext not in {".csv", ".json"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported file format: {ext}. Allowed: .csv, .json")
+
         content = await file.read()
         if len(content) > MAX_UPLOAD_SIZE:
             raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
@@ -507,22 +511,7 @@ async def api_health_ready():
     checks["groq_circuit"] = groq_breaker.get_state()
 
     if GROQ_API_KEY:
-        try:
-            import groq
-            client = groq.Groq(api_key=GROQ_API_KEY)
-            loop = asyncio.get_running_loop()
-            await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: client.chat.completions.create(
-                    model=LLM_MODEL,
-                    messages=[{"role": "user", "content": "ping"}],
-                    max_tokens=1,
-                )),
-                timeout=10.0,
-            )
-            checks["llm"] = "ok"
-        except Exception as e:
-            checks["llm"] = f"error: {type(e).__name__}"
-            status = "degraded"
+        checks["llm"] = groq_breaker.get_state()
     else:
         checks["llm"] = "skipped: no GROQ_API_KEY"
 

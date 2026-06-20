@@ -174,12 +174,6 @@ export default function App() {
     WebApp.MainButton.hide();
     WebApp.BackButton.hide();
 
-    if (tab === 'search' && vacancies.length > 0) {
-      WebApp.MainButton.setText('AI-проанализировать');
-      WebApp.MainButton.show();
-      WebApp.MainButton.onClick(handleAnalyze);
-    }
-
     if (tab === 'analysis' && results.length > 0) {
       WebApp.BackButton.show();
       WebApp.BackButton.onClick(() => setTab('search'));
@@ -198,7 +192,7 @@ export default function App() {
       WebApp.MainButton.offClick(() => {});
       WebApp.BackButton.offClick(() => {});
     };
-  }, [tab, vacancies, results]);
+  }, [tab, results]);
 
   async function loadFavorites() {
     try {
